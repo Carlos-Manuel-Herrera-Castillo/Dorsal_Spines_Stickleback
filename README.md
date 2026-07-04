@@ -4,7 +4,7 @@ The repeated evolution of reduced skeletal armor in threespine stickleback provi
 
 This repository contains scripts for DNA sequencing, RNA-seq, annotation, and phenotypic analyses.
 
-The code was split from one larger analysis file into smaller scripts so the workflow is easier to follow, run step by step, and share on GitHub.
+The code was split from one larger analysis file into smaller scripts so the workflow is easier to follow, run step by step, and share on GitHub. The original file is in sctipts/Carlos_code_15.01.26.txt
 
 ## Project Structure
 
