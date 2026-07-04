@@ -1,0 +1,2157 @@
+############################
+############################
+### DNA work:
+# A* Split big .fastq files
+# B* Alignment with novoalign
+# C* .sam to .bam convertion using samtools
+# D* Merge .bam files
+# E* Pileup (in R)
+# F* FreqSum (+ alternative ultrafast implementation)
+# G* FreqSum splitting by chromosome
+# H* AFD (parallelization)
+# I* AFD (R script named "compute_afd.R") (+ alternative ultrafast implementation)
+# J* AFD plotter
+
+### RNA seq work:
+# K* Trimming the adaptors
+# L* Preparing STAR
+# M* STAR alignment
+# N* Extract gene names from chromosome VI
+# O* SAM to BAM
+# P* Principal Component Analysis (PCA) conditions
+# Q* Bulk RNAseq data analysis
+# R* GO term analysis
+
+### Phenotypic analyses:
+# S* Location of first and third dorsal spine, and vertebral number, in F2 hybrids
+# T* Simulation and Approximate Bayesian Comutation (ABC) to estimate the frequency of the derived allele in SCAD
+# U* Length of first and third dorsal spine in F2 hybrids
+# V* Plotting of developmental sequence
+############################
+############################
+
+
+##### A* Split big .fastq files
+
+split -l 360300000 my/folder/path/D_S_High.R1.fastq my/folder/path/D_S_High.R1_part_
+# The resulting files should contain a number of rows divisible by 4
+
+############################################################################################ A*
+
+
+##### B* Alignment with novoalign
+
+./novoalign -d /path/to/reference/genome/Gac_v5_pitx1_separateChrUn.ndx -f /path/to/read/1/D_S_High.R1_part_aa.fastq /path/to/read/2/D_S_High.R2_part_aa.fastq -F STDFQ -t320 -g 40 -x 12 -r N -e 200 -i PE 200,250 -o SAM -o FullNW > /path/for/output/D_S_High_part_aa_novoal.sam
+
+############################################################################################ B*
+
+
+##### C* .sam to .bam convertion using samtools
+
+samtools view -S -b D_S_High_part_aa_novoal.sam > D_S_High_part_aa_novoal.bam
+
+############################################################################################ C*
+
+
+##### D* Merge .bam files
+samtools merge D_S_High_Merged.bam /my/folder/path/D_S_High_part_a*_novoal.bam
+
+############################################################################################ D*
+
+
+##### E* Pileup (in R)
+rm(list=ls())
+library(Rsamtools)
+setwd('/my/folder/path/') ### specify folder containing the input bam
+name<-'D_S_High_Merged' ### specify data name
+bam<-paste(name, '.bam', sep='') # conversion to final bam file name (this assumes the BAM is sorted and indexed)
+outfile<-paste(name, '.pileupAllChr.txt', sep='') # generate output file name
+p_param<-PileupParam(max_depth = 5000,distinguish_strands=FALSE, min_nucleotide_depth=0, min_base_quality=20, ignore_query_Ns=T, include_deletions=TRUE)
+#define the chromosomes to loop through:
+chrs <- readLines("/my/folder/path/chrs.txt") # file containing list of chromosomes and unasigned contigs
+# pileup loop:
+
+for(i in 1:length(chrs)){
+        chr<-chrs[i]
+        s_param<-ScanBamParam(which=GRanges(chr, IRanges(start=1, end=40000000)))
+        p<-pileup(bam, scanBamParam=s_param, pileupParam=p_param)
+        p<-p[,-5]
+        write.table(p, outfile, col.names=FALSE, row.names=FALSE, quote=FALSE, append=TRUE)
+}
+
+############################################################################################ E*
+
+
+#### F* FreqSum
+
+#!/bin/bash
+#SBATCH --job-name=FreqSum_Parallel_D_S_Low
+#SBATCH --cpus-per-task=20
+#SBATCH --mem-per-cpu=12G
+#SBATCH --time=00:30:00
+#SBATCH --qos=30min
+#SBATCH --output=/my/folder/path/FreqSum_D_S_Low_%A_%a.o
+#SBATCH --error=/my/folder/path/FreqSum_D_S_Low_%A_%a.e
+#SBATCH --mail-type=END,FAIL,TIME_LIMIT
+#SBATCH --mail-user=email@email.com
+
+module load R # Load the R module (adjust if necessary)
+
+# Run the R script
+Rscript - <<EOF
+
+.libPaths("/my/library/path/x86_64-pc-linux-gnu-library/4.4")
+library(data.table)
+library(parallel)
+
+# Read the data using data.table
+data <- fread("/my/folder/path/D_S_High_Merged.pileupAllChr.txt", header = FALSE, col.names = c("chr", "pos", "base", "count"))
+
+# Detect the number of CPUs allocated by SLURM (default to 1 if not set)
+num_cpus <- as.numeric(Sys.getenv("SLURM_CPUS_PER_TASK", unset = 1))
+
+# Split the data into chunks based on the number of CPUs
+data_chunks <- split(data, cut(seq(nrow(data)), num_cpus, labels = FALSE))
+
+# Function to process each chunk
+process_chunk <- function(chunk) {
+  # Ensure the chunk is a data.table
+  chunk <- as.data.table(chunk)
+  # Transform the chunk into a wide format
+  dcast(chunk, chr + pos ~ base, value.var = "count", fill = 0)
+}
+
+# Process chunks in parallel using the allocated CPUs
+chunk_results <- mclapply(data_chunks, process_chunk, mc.cores = num_cpus)
+
+# Combine the results
+transformed_data <- rbindlist(chunk_results)
+
+# Ensure all unique positions are included
+unique_positions <- unique(data[, .(chr, pos)])
+transformed_data <- merge(unique_positions, transformed_data, by = c("chr", "pos"), all.x = TRUE)
+
+# Replace NA with 0 (if any remaining)
+transformed_data[is.na(transformed_data)] <- 0
+
+# Save the transformed data to a file
+fwrite(transformed_data, "/my/folder/path/merged_D_S_Low.FreqSumAllChr.txt", sep = "\t")
+
+EOF
+#########
+
+
+### ALTERNATIVE: speed-optimized, superfast FreqSum caller:
+# input files are pileups (see code E)
+# no cluster needed, works on a simple descktop machine and processes a chromosome in 2-3 minutes
+
+rm(list=ls())
+library(data.table)
+
+# input data (pileUps, here for pooolSeq data):
+file_path <- "C:\\Users\\bernerd\\switchdrive\\Institution\\carlos\\research\\GWAS_DB/Basicpool.pileup.chrVI.txt"
+#file_path <- "C:\\Users\\bernerd\\switchdrive\\Institution\\carlos\\research\\GWAS_DB/Dpool.pileup.chrVI.txt"
+
+
+# Read the pileup file. some 20s for a chromosome
+dt <- fread(file_path, header = FALSE, col.names = c("chromosome", "position", "nucleotide", "count"))
+
+# Ensure count is numeric
+dt[, count := as.integer(count)] # := is an assignment operator in data.table
+
+# Pivot the table to wide format: rows = positions, columns = A/C/G/T counts. run time 1-2 min for a chromosome on PC
+dt_wide <- dcast(
+  dt,
+  chromosome + position ~ nucleotide,
+  value.var = "count",
+  fun.aggregate = sum,
+  fill = 0
+)
+
+# Ensure all four nucleotides are present in columns (even if absent from input). run time <1s
+nucleotides <- c("A", "C", "G", "T")
+missing <- setdiff(nucleotides, names(dt_wide))
+if (length(missing) > 0) {
+  dt_wide[, (missing) := 0]
+}
+
+# Order columns for consistent output
+setcolorder(dt_wide, c("chromosome", "position", nucleotides))
+
+# write out to file. run time is a few secs
+fwrite(dt_wide, "C:/Users/daniel/switchdrive/Institution/carlos/research/GWAS_DB/Basicpool_freqSum_chrVI.txt", sep = "\t")
+#fwrite(dt_wide, "C:/Users/daniel/switchdrive/Institution/carlos/research/GWAS_DB/Dpool_freqSum_chrVI.txt", sep = "\t")
+############################################################################################ F*
+
+
+##### G* FreqSum splitting by chromosome
+
+
+#!/bin/bash
+
+# Define input and output directories
+input_file="/my/folder/path/merged_D_S_Low.FreqSumAllChr.txt"
+output_dir="/my/folder/path/DS_Separate_Chr_Novoalign"
+
+# Create an array of chromosome names
+chromosomes=("chrI" "chrII" "chrIII" "chrIV" "chrV" \
+             "chrVI" "chrVII" "chrVIII" "chrIX" "chrX" \
+             "chrXI" "chrXII" "chrXIII" "chrXIV" "chrXV" \
+             "chrXVI" "chrXVII" "chrXVIII" "chrXIX" "chrXX" \
+             "chrXXI" "pitx1" "chrY" "chrM")
+
+# Loop through each chromosome and filter the input file
+for chr in "${chromosomes[@]}"; do
+    output_file="${output_dir}/D_S_Low_BWA.FreqSum${chr}.txt"
+    # Write the header line to the output file
+    echo -e "chr\tpos\tA\tC\tG\tT\t-" > "$output_file"
+    grep "^${chr}[[:space:]]" "$input_file" >> "$output_file"
+done
+
+############################################################################################ G*
+
+
+##### H* AFD (parallelization)
+
+#!/bin/bash
+#SBATCH --job-name=ADF_ParallelJob
+#SBATCH --cpus-per-task=20  # Request 20 CPUs
+#SBATCH --mem-per-cpu=10G
+#SBATCH --time=1-00:00:00
+#SBATCH --qos=1day
+#SBATCH --output=/my/folder/path/AFD_table_DS.o
+#SBATCH --error=/my/folder/path/AFD_table_DS.e
+#SBATCH --mail-type=END,FAIL,TIME_LIMIT
+#SBATCH --mail-user=email@email.com
+
+
+# Define the list of chromosomes
+chromosomes=("I" "II" "III" "IV" "V" "VI" "VII" "VIII" "IX" "X" "XI" "XII" "XIII" "XIV" "XV" "XVI" "XVII" "XVIII" "XIX" "XX" "XXI" "pitx1" "Y" "M")
+
+# Define the coverage thresholds for each chromosome
+locovta_values=(80 80 80 80 80 \
+                80 80 80 80 80 \
+                80 80 80 80 80 \
+                80 80 80 50 80 \
+                80 50 10 300)
+upcovta_values=(300 300 300 300 300 \
+                300 300 300 300 300 \
+                300 300 300 300 300 \
+                300 300 300 250 300 \
+                300 300 80 8800)
+locovtb_values=(80 80 80 80 80 \
+                80 80 80 80 80 \
+                80 80 80 80 80 \
+                80 80 80 50 80 \
+                80 50 10 300)
+upcovtb_values=(300 300 300 300 300 \
+                300 300 300 300 300 \
+                300 300 300 300 300 \
+                300 300 300 250 300 \
+                300 300 80 8800)
+# Number of CPUs to use in parallel
+num_cpus=20
+job_count=0
+
+# Loop through each chromosome and run in parallel
+for i in "${!chromosomes[@]}"; do
+    chr="${chromosomes[i]}"
+    locovta="${locovta_values[i]}"
+    upcovta="${upcovta_values[i]}"
+    locovtb="${locovtb_values[i]}"
+    upcovtb="${upcovtb_values[i]}"
+    # Run the R script in the background
+    ml R
+    Rscript compute_afd.R "$chr" "$locovta" "$upcovta" "$locovtb" "$upcovtb" &
+
+    # Track the number of parallel jobs
+    job_count=$((job_count + 1))
+
+    # If we reach the CPU limit, wait for all background jobs to finish before continuing
+    if (( job_count % num_cpus == 0 )); then
+        wait  # Wait for all running background jobs
+    fi
+done
+
+# Final wait to ensure all jobs complete
+wait
+
+############################################################################################ H*
+
+
+##### I* AFD (R script named "compute_afd.R")
+
+rm(list=ls())
+.libPaths("/library/path/R/x86_64-pc-linux-gnu-library/4.4")
+library(data.table) #install data.table package if needed
+options(scipen=50000000) #to turn off scientific notation in the outfile name
+setwd('/my/folder/path/')
+args <- commandArgs(trailingOnly = TRUE)
+chr<-args[1] ### choose target chromosome
+#chr<-'I'# choose target chromosome
+comp<-c('D_S_High_', 'D_S_Low_')### indicate what population contrast is to be performed
+
+#coverage and maf thresholds to be applied to SNPs. The former requires exploration of the read depth using the module below
+
+locovta<-as.numeric(args[2]) ### set minimum total coverage threshold for the two dominant bases (based on the two samples pooled; this considers the major and minor base only, not coverage across all bases)
+upcovta<-as.numeric(args[3])### set maximum total coverage threshold for the two dominant bases (based on the two samples pooled; this considers the major and minor base only, not coverage across all bases)
+locovtb<-as.numeric(args[4]) ### set minimum total coverage threshold for the two dominant bases (based on the two samples pooled; this considers the major and minor base only, not coverage across all bases)
+upcovtb<-as.numeric(args[5])### set maximum total coverage threshold for the two dominant bases (based on the two samples pooled; this considers the major and minor base only, not coverage across all bases)
+popcovt<-50 ### set minimum coverage for the two dominant bases within each sample
+maft<-0.1 ### set the minor allele frequency threshold
+
+
+outfile<-paste(comp[1], '.', comp[2], '.afd.chr', chr, '.locovtHigh', locovta, '.upcovtHigh', upcovta, '.locovtHigh', locovtb, '.upcovtHigh', upcovtb, '.popcovt', popcovt, '.maft', maft, '.txt' , sep='')
+out<-paste('chr', 'pos', 'majAl', 'minAl', 'afd', sep=' ')
+write.table(out, outfile, quote=F, row.names=F, col.names=F)
+
+#read data (freqSums):
+a<-data.frame(fread(paste(comp[1], '.FreqSumchr', chr,  '.txt', sep=''), h=T, stringsAsFactors=F))
+b<-data.frame(fread(paste(comp[2], '.FreqSumchr', chr,  '.txt', sep=''), h=T, stringsAsFactors=F))
+a<-a[which(a$pos>=1), ] #a feature of code B is that for segment of the pileup that contain no data (unmapped), one empty row is written into the freqSum per empty segment. no big deal, but this correction here is needed (in the future, 
+improve code B)
+b<-b[which(b$pos>=1), ]
+
+aBases<-a[,3:7]
+head(aBases)
+summedBasesa<-rowSums(aBases)
+head(summedBasesa)
+a$AlleleCount <- summedBasesa
+head(a)
+
+bBases<-b[,3:7]
+head(bBases)
+summedBasesb<-rowSums(bBases)
+head(summedBasesb)
+b$AlleleCount <- summedBasesb
+head(b)
+
+head(a)
+head(b)
+
+uloc<-intersect(a$pos, b$pos)
+a<-a[match(uloc, a$pos),]
+b<-b[match(uloc, b$pos),]
+
+aBases<-as.matrix(a[,3:7])
+bBases<-as.matrix(b[,3:7])
+head(aBases)
+
+
+#####
+# explore coverage (read depth), to find good thresholds:
+#rand<-sample(uloc, 100000, replace=F) #inspect coverage at 1000 random loci on target chromosome
+#rda<-NULL #collects the read depths across subsamples SNPs
+#rdb<-NULL
+#aa<-a[rand,]
+#bb<-b[rand,]
+#for(i in 1:length(rand)){
+#       rda<-c(rda, sum(aa[i, 3:6]))
+#       rdb<-c(rdb, sum(bb[i, 3:6]))
+#}
+#td<-na.omit(rda) ### choose sample to characterize
+#plot(seq(1, length(td)), td)
+#hist(td, breaks=50000, xlim=c(0, 300))
+#median(td)
+#length(which(td<50))/length(td) # check influence of some thresholds
+#length(which(td>250))/length(td)
+# some insights: Pl_Nr_High, median:110x, good thresholds: 50-180x
+#                                Pl_Nr_Middle, median:97x, good thresholds: 50-170x
+#                                Pl_Nr_Low, median:148x, good thresholds: 70-240x
+#                                so for High vs. Low, can consider using 50-250x
+#####
+
+pool<-a[,3:7]+b[,3:7] #the pooled counts
+###maf filtering; get logical vector of positions passing the maf threshold (condition to qualify as SNP)
+maf<-function(x){
+  sort(x, decreasing=T)[2]/sum(sort(x, decreasing=T)[1:2])>=maft
+}
+mafs<-apply(pool, MARGIN=1, FUN=maf) # can run in a single job, although this may take >2h for a large chromosome
+a<-a[mafs,] #filter by MAF threshold
+b<-b[mafs,]
+
+###coverage filtering; get logical vector of SNPs having appropriate read depth (condition to allow precise allele freq estimation and to qualify as non-transposon)
+cova<-function(x){
+  (sum(sort(x, decreasing=T)[1:2])>=locovta) & (sum(sort(x, decreasing=T)[1:2])<=upcovta)
+}
+
+covsa<-apply(a[,3:7], MARGIN=1, FUN=cova)
+a<-a[covsa,] #filter by within-sample read depth threshold
+
+covb<-function(x){
+  (sum(sort(x, decreasing=T)[1:2])>=locovtb) & (sum(sort(x, decreasing=T)[1:2])<=upcovtb)
+}
+covsb<-apply(b[,3:7], MARGIN=1, FUN=covb)
+b<-b[covsb,]
+
+uloc<-intersect(a$pos, b$pos)
+a<-a[match(uloc, a$pos),]
+b<-b[match(uloc, b$pos),]
+###now the actual loop calculating the difference between the two samples in allele frequencies at each SNP
+pool<-a[,3:7]+b[,3:7]#again pooling, only to define the minor and major alleles
+pool<-as.matrix(pool)
+#amajmin<-NULL #just to compare coverage of the two major bases between the samples
+#bmajmin<-NULL
+for(i in 1:nrow(a)){
+  majmin<-names(sort(pool[i,], decreasing=T)[1:2]) #vector specifying the major and minor allele based on the sample pool
+  ai<-a[i,]
+  aimin<-ai[which(names(ai)==majmin[2])]
+  aimaj<-ai[which(names(ai)==majmin[1])]
+  if(sum(aimin, aimaj)>=popcovt){
+    bi<-b[i,]
+    bimin<-bi[which(names(bi)==majmin[2])]
+    bimaj<-bi[which(names(bi)==majmin[1])]
+    if(sum(bimin, bimaj)>=popcovt){
+      #amajmin<-c(amajmin, aimin+aimaj)
+      #bmajmin<-c(bmajmin, bimin+bimaj)
+      afd<-round(aimin/sum(aimin, aimaj)-bimin/sum(bimin, bimaj), 4) #afd is minor allele freq in a minus that in b
+      res<-paste(ai['chr'], ai['pos'], majmin[1], majmin[2], afd, sep=' ')
+      write.table(res, outfile, quote=F, row.names=F, col.names=F, append=T)
+    }
+  }
+}
+#plot(amajmin, bmajmin)
+
+
+### this is a speed-optimized, superfast AFD caller, here implemented just for chromosome VI, to process the poolSeq data from the natural samples (North Uist basic lakes vs. large SCAD sample):
+# run on 64 bit R distribution
+# input files are the so-called freqSums (see codes F, G), in this format:
+# chromosome position     A     C     G     T     -
+# chrVI     3294     1     0     0     0     0
+
+rm(list=ls())
+library(data.table)
+library(Rfast) # for maf check
+maft<-0.25 ### minor allele frequency threshold across pool of pools. 0.1 | 0.25
+bcovt<-c(35, 110) ### min/max read depth threshold for this pool
+dcovt<-c(100, 240) ### min/max read depth threshold for this pool
+
+setwd("C:\\Users\\bernerd\\switchdrive\\Institution\\carlos\\research\\GWAS_DB") ###
+
+# chrVI:
+outfile<-paste("afd.bpool.dpool.chrVI.maft", maft, ".txt", sep='') ###
+b<-fread("Basicpool_freqSum_chrVI.txt") ### North Uist lacustrine
+d<-fread("Dpool_freqSum_chrVI.txt") ### SACD
+
+out<-paste("chr", "pos", "bpool_A", "bpool_C", "bpool_G", "bpool_T", "bpool_DEL", "bpool_totBS", "dpool_A", "dpool_C", "dpool_G", "dpool_T", "dpool_DEL", "dpool_totBS", "afd", sep=' ')
+write.table(out, outfile, quote=F, row.names=F, col.names=F)
+
+# Calculate read depth (excluding deletions)
+b[, depth := A + C + G + T]
+d[, depth := A + C + G + T]
+
+# Filter by read depth
+bf <- b[depth >= bcovt[1] & depth <= bcovt[2]]
+df <- d[depth >= dcovt[1] & depth <= dcovt[2]]
+
+# Identify shared positions
+shared_positions <- intersect(bf$position, df$position)
+
+# Filter both datasets to shared positions and sort
+bs <- bf[position %in% shared_positions][order(position)]
+ds <- df[position %in% shared_positions][order(position)]
+
+# check proportion of ok positions and release RAM:
+nrow(bf)/nrow(b)
+nrow(df)/nrow(d)
+rm("b", "d", "bf", "df")
+gc()
+
+# Calculate allele frequencies (excluding deletions)
+bfr <- bs[, .(A = A / depth, C = C / depth, G = G / depth, T = T / depth)]
+dfr <- ds[, .(A = A / depth, C = C / depth, G = G / depth, T = T / depth)]
+
+# filter by MAF:
+paf<-(bfr+dfr)/2
+mat<-as.matrix(paf)
+# ultrafast (just takes a few secs for a chromosome):
+srt<-Rfast::rowSort(mat, descending = TRUE)
+maf<-srt[,2]
+idx<-which(maf>=maft)
+
+# filter data sets and allele frequencies just to positions passing the maft filter:
+bs<-bs[idx,]
+ds<-ds[idx,]
+bfr<-bfr[idx,]
+dfr<-dfr[idx,]
+paf<-paf[idx,]
+
+# calc afd and write output, takes a minute or so for a chromosome
+for(i in 1:nrow(paf)){
+	majal<-as.integer(which.max(paf[i,]))
+	afd<-round(abs(as.matrix(bfr)[i, majal]-as.matrix(dfr)[i, majal]), 4)
+	out<-paste(paste(bs[i,], collapse=" "), paste(ds[i,-c(1:2)], collapse=" "), afd, sep=' ')
+	write.table(out, outfile, quote=F, row.names=F, col.names=F, append=T)
+}
+###
+
+############################################################################################ I*
+
+
+##### J* AFD plotter
+
+rm(list=ls())
+#install.packages("data.table")
+library(data.table)
+setwd('/my/folder/path') ### define input file location
+infile<-"DS_AFD.txt" 
+
+# Explore the distribution of spacing between the SNPs (seems mostly below 500 bp); 5 kb windows certainly adequate
+#a<-d[-1,2]
+#b<-d[-nrow(d),2]
+#c<-a-b
+#hist(c, xlim=c(0,6000), breaks=1000)
+
+### get medians for 5 kb windows, for sliding window plotting
+#rm(list=ls())
+df<-fread(infile, h=T) ###
+# head(df[order(df$afd),],100) # for whole chrVI, the Hox signal is among the 5 strongest (considering that many high-diff SNPs map to the same regions elsewhere on the chr)
+# plot(df$pos, df$afd); segments(17721749, 0, 17721749, 1) # just to check 
+ws<-100000 ### window width, in bp; 5000 | 10000
+st<-50000 ### overlap width in bp; 2500 | 5000
+snpt<-200 ### minimum number of SNPs required per window; 5 | 10
+
+d<-df[, .(chr, pos, afd)]
+d[, pos := as.numeric(pos)]
+
+###Do you want a specific chromosome?
+d<-d[chr == "chrVI"]
+d$afd<-abs(d$afd)
+setorder(d, pos) # to make sure, sort by position
+
+# Create sliding windows
+start<-seq(min(d$pos), max(d$pos)-ws, by=st)
+end<-start+ws
+
+w<-NULL
+for (i in seq_along(start)) {
+  snps<-d[which(d[,pos]>=start[i] & d[,pos]<end[i]),]
+  if (nrow(snps)>=snpt){
+    w<-rbind(w, c((start[i]+end[i])/2, median(snps$afd), nrow(snps)))
+  }
+}
+w<-data.frame(w)
+names(w)<-c('midpos', 'medafd', 'nsnps')
+
+plot(d[[2]], d[[3]], xlim=c(0, 17770665), pch=1, cex=0.6, col=gray(0.65)) #All chrVI
+
+# add the sliding window values contained in the w5/w10 etc objects
+lines(w$midpos, w$medafd, col='magenta', lwd=2)
+lines(w2$midpos, w2$medafd, col='mediumblue', lwd=2)
+lines(w10$midpos, w10$medafd, col='red2', lwd=2)
+lines(w20$midpos, w20$medafd, col='mediumblue', lwd=2)
+
+# alternatively, superpose a LOESS smoother
+loe<-predict(loess(d[,15] ~ d[,2], span=0.001, degree=1)) # c. 15 sec; this span is ok for the broad chrVI section
+loe<-predict(loess(d[,15] ~ d[,2], span=0.0005, degree=1)) # this span is ok for the chrVI HOX section
+lines(d$pos, loe, col='cornflowerblue', lwd=2)
+
+loe<-predict(loess(d[[3]] ~ d[[2]], span=0.05, degree=1))
+loe<-predict(loess(d[[3]] ~ d[[2]], span=0.03, degree=1)) # c. 15 sec; this span is ok for the broad chrVI section
+loe<-predict(loess(d[[3]] ~ d[[2]], span=0.0004, degree=1)) # this span is ok for the chrVI HOX section
+lines(d$pos, loe, col='#b44599', lwd=2)
+
+#chrVI candidates:
+
+hoxd4b<-c(17744551,17751342)
+rect(hoxd4b[1], 0, hoxd4b[2], 0.4)
+text(hoxd4b[1], 0.4, "hoxd4b(+)")
+
+hoxd9b<-c(17728417,17733088)
+rect(hoxd9b[1], 0, hoxd9b[2], 0.4)
+text(hoxd9b[1], 0.4, "hoxd9b(+)")
+
+hoxd11b<-c(17721749, 17725793)
+rect(hoxd11b[1], 0, hoxd11b[2], 0.4)
+text(hoxd11b[1], 0.4, "hoxd11b(+)")
+
+cyp26b1<-c(15822535,15830014) 
+rect(cyp26b1[1], 0, cyp26b1[2], 0.4)
+text(cyp26b1[1], 0.4, "cyp26b1(-)")
+
+slamf9<-c(15892702,15893829) 
+rect(slamf9[1], 0, slamf9[2], 0.4)
+text(slamf9[1], 0.4, "slamf9(-)")
+
+sult6b1<-c(15930073, 15936592)
+rect(sult6b1[1], 0, sult6b1[2], 0.4)
+text(sult6b1[1], 0.4, "sult6b1(-)")
+
+elovl6<-c(18803388,18806393)
+rect(elovl6[1], 0, elovl6[2], 0.4)
+text(elovl6[1], 0.4, "elovl6(-)")
+
+LOC120820802<-c(18644440,18646006)
+rect(LOC120820802[1], 0, LOC120820802[2], 0.4)
+text(LOC120820802[1], 0.4, "LOC120820802(+)")
+
+lnpk<-c(17707697,17716692)
+rect(lnpk[1], 0, lnpk[2], 0.4)
+text(lnpk[1], 0.4, "lnpk(-)")
+
+mtx2<-c(17753154,17756887)
+rect(mtx2[1], 0, mtx2[2], 0.4)
+text(mtx2[1], 0.4, "mtx2(+)")
+
+cdh5<-c(17777642,17801941)
+rect(cdh5[1], 0, cdh5[2], 0.4)
+text(cdh5[1], 0.4, "cdh5(+)")
+
+############################################################################################ J*
+
+
+##### K* Trimming the adaptors
+
+#!/bin/bash
+
+#SBATCH --job-name=Trimmomatic                   #This is the name of your job
+#SBATCH --ntasks=1 #run on 3 tasks
+#SBATCH --cpus-per-task=4                  #This is the number of cores reserved
+#SBATCH --mem-per-cpu=10G              #This is the memory reserved per core.
+#SBATCH --time=06:00:00        #This is the time that your task will run
+#SBATCH --qos=6hours           #You will run in this queue
+#SBATCH --array=1-95       ###688 is the num ber of samples
+#SBATCH --output=/my/folder/path/Trimmomatic_output_%A_%a.o
+#SBATCH --error=/my/folder/path/Trimmomatic_error_%A_%a.e
+#SBATCH --mail-type=END,FAIL,TIME_LIMIT
+#SBATCH --mail-user=email@email.com     #You will be notified via email when your task ends or fails
+
+#load your required modules below
+
+ml Trimmomatic/0.39-Java-1.8
+
+#add your command lines below
+
+cd /my/folder/path/  # set working directory
+
+#get single sample name
+DATE=`date '+%d-%m-%Y %H:%M:%S'`  # variable for date/time
+echo 'Start of the job' $DATE  # diasplay date/time variable
+
+
+MYID=`cat Sample_ID.txt | head -n $SLURM_ARRAY_TASK_ID | tail -n 1`    #This has a file that contains all the sample IDs
+echo ${MYID}_test
+
+#make new directory for every sample
+mkdir /my/folder/path/${MYID} ##this creates a directory for the trimmed files
+
+read1=$(cat fastq_files.txt | grep ${MYID} | grep "R1")  # fastq_files.txt contains the location of the files to be processed (change it)
+read2=$(cat fastq_files.txt | grep ${MYID} | grep "R2")
+#echo $read1
+#echo $read2
+
+#enter new directory
+
+cd /my/folder/path/${MYID}
+
+java -jar /cluster/apps/Trimmomatic/0.39-Java-1.8/trimmomatic-0.39.jar PE -version -threads 4 -phred33 $read1 $read2 //my/folder/path/${MYID}/${MYID}.1.paired.fastq //my/folder/path/${MYID}/${MYID}.1.unpaired.fastq //my/folder/path/${MYID}/${MYID}.2.paired.fastq /my/folder/path/${MYID}/${MYID}.2.unpaired.fastq ILLUMINACLIP:/cluster/apps/Trimmomatic/0.39-Java-1.8/adapters/TruSeq3-PE.fa:2:30:10:2 SLIDINGWINDOW:4:15 MINLEN:30
+
+############################################################################################ K*
+
+
+##### L* Preparing STAR
+
+#!/bin/bash
+#SBATCH --job-name=STAR_GenomeGeneration_NCBI_Gac_v5_pitx1_ChrUnSep                  #This is the name of your job
+#SBATCH --ntasks=1 #run on 3 tasks
+#SBATCH --cpus-per-task=8                  #This is the number of cores reserved
+#SBATCH --mem-per-cpu=10G              #This is the memory reserved per core.
+#SBATCH --time=5:00:00        #This is the time that your task will run
+#SBATCH --qos=6hours           #You will run in this queue
+#SBATCH --array=1-1
+#SBATCH --output=/my/folder/path/STAR_GenomeGeneration_V5Pitx1ChrUnSep.o
+#SBATCH --error=/my/folder/path/STAR_GenomeGeneration_V5Pitx1ChrUnSep.e
+#SBATCH --mail-type=END,FAIL,TIME_LIMIT
+#SBATCH --mail-user=email@email.com      #You will be notified via email when your task ends or fails
+#SBATCH --chdir=/my/folder/path
+
+#load your required modules below
+ml STAR
+
+#code to run (Remember that first comes the output and then the input)
+
+STAR  --runMode genomeGenerate --genomeSAindexNbases 13 --runThreadN 8  --genomeDir /my/folder/path  --genomeFastaFiles /my/folder/path/Gac_v5_pitx1_separateChrUn.fa --sjdbGTFfile /my/folder/path/NCBI_Gac_v5_pitx1.gtf  --sjdbGTFfeatureExon exon  --sjdbOverhang 100
+
+
+############################################################################################ L*
+
+
+##### M* STAR alignment
+
+#!/bin/bash
+
+#SBATCH --job-name=STAR_aligning_NCBI_Gac_v5_pitx1    #This is the name of your job
+#SBATCH --ntasks=1 #run on 3 tasks
+#SBATCH --cpus-per-task=8                  #This is the number of cores reserved
+#SBATCH --mem-per-cpu=18G              #This is the memory reserved per core.
+#SBATCH --time=1-00:00:00        #This is the time that your task will run
+#SBATCH --qos=1day           #You will run in this queue
+#SBATCH --array=1-95
+#SBATCH --output=/my/folder/path/STAR_mapping_50_Trimmomatic_NCBI_Gac_v5_pitx1_output_%A_%a.o
+#SBATCH --error=/my/folder/path/STAR_mapping_50_Trimmomatic_NCBI_Gac_v5_pitx1_error_%A_%a.e
+#SBATCH --mail-type=END,FAIL,TIME_LIMIT
+#SBATCH --mail-user=email@email.com       #You will be notified via email when your task ends or fails
+#SBATCH --chdir=/my/folder/path
+
+#load your required modules below
+ml STAR/2.7.3a-foss-2018b
+
+#add your command lines below
+#for every sample in text file
+
+DATE=`date '+%d-%m-%Y %H:%M:%S'`  # variable for date/time
+echo 'Start of the job' $DATE  # diasplay date/time variable
+
+MYID=`cat Sample_ID.txt | head -n $SLURM_ARRAY_TASK_ID | tail -n 1`
+echo ${MYID}_test
+
+
+#make new directory for every sample
+mkdir /scicore/home/bernerd/herrer0002/RNAseq/STAR/${MYID}
+
+#list_of_fastq.txt contains the location and files to be used, paired forward and paired reverse
+read1=$(cat list_of_fastq.txt | grep ${MYID} | grep "1.paired")
+read2=$(cat list_of_fastq.txt | grep ${MYID} | grep "2.paired")
+#echo $read1
+#echo $read2
+#enter new directory
+cd /scicore/home/bernerd/herrer0002/RNAseq/STAR/${MYID}
+
+#align with STAR
+STAR --outFilterMultimapNmax 1 --genomeDir /my/folder/path --readFilesIn $read1 $read2 --outSAMtype BAM SortedByCoordinate --outReadsUnmapped Fastx --runThreadN 8 --limitBAMsortRAM 40000000000 --outFileNamePrefix /my/folder/path/${MYID}/${MYID}.STAR
+
+############################################################################################ M*
+
+
+##### N* Extract gene names from chromosome VI
+
+gff_file="NCBI_Gac_v5_pitx1.gff"
+output_file="AnnotationChrVI_onlygenes.txt"
+
+
+awk '$1 == "chrVI" && $3 == "gene"' $gff_file | \
+    grep -o 'ID=gene-[^;]*' | \
+    cut -d'=' -f2  > $output_file
+
+# Explanation of command:
+# 1. awk '$1 == "chrIV" && $3 == "gene"': Filters rows for chromosome IV and gene feature type.
+# 2. grep -o 'ID=gene-[^;]*': Extracts the ID field that starts with 'gene-' until the first semicolon.
+# 3. cut -d'=' -f2: Splits the string at '=' and takes the second part.
+
+echo "Gene names extracted and saved to $output_file"
+
+############################################################################################ N*
+
+
+##### O* SAM to BAM
+
+#!/bin/bash
+
+#SBATCH --job-name=HTSeq                   #This is the name of your job
+#SBATCH --ntasks=1 #run on 3 tasks
+#SBATCH --cpus-per-task=1                  #This is the number of cores reserved
+#SBATCH --mem-per-cpu=4G              #This is the memory reserved per core.
+#SBATCH --time=6:00:00        #This is the time that your task will run
+#SBATCH --qos=6hours           #You will run in this queue
+#SBATCH --array=1-95
+#SBATCH --output=/my/folder/path/RNASeq_bam_to_sam.o
+#SBATCH --error=/my/folder/path/RNASeq_bam_to_sam.e
+#SBATCH --mail-type=END,FAIL,TIME_LIMIT
+#SBATCH --mail-user=email@email.com        #You will be notified via email when your task ends or fails
+#SBATCH --chdir=/my/folder/path/
+
+
+#load your required modules below
+ml SAMtools
+$(head -$SLURM_ARRAY_TASK_ID commands.cmd | tail -1)
+
+#commands.cmd contain the lines of the commands for every sample as such: samtools view -h -o RNASeq_sam_files_ChrUnSep/RNA_DShigh_13days_Rep_Sam05_S41_output.sam RNA_DShigh_13days_Rep_Sam05_S41/*.bam
+
+############################################################################################ O*
+
+
+##### P* Principal Component Analysis (PCA) conditions
+
+library(ggplot2)
+
+#0.1. PC1 and PC2
+plotPCA.12 <- function (object, intgroup = "condition", ntop = 5000, returnData = FALSE) 
+{
+  rv <- rowVars(assay(object))
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, 
+                                                     length(rv)))]
+  pca <- prcomp(t(assay(object)[select, ]))
+  percentVar <- pca$sdev^2/sum(pca$sdev^2)
+  if (!all(intgroup %in% names(colData(object)))) {
+    stop("the argument 'intgroup' should specify columns of colData(dds)")
+  }
+  intgroup.df <- as.data.frame(colData(object)[, intgroup, drop = FALSE])
+  group <- if (length(intgroup) > 1) {
+    factor(apply(intgroup.df, 1, paste, collapse = " : "))
+  }
+  else {
+    colData(object)[[intgroup]]
+  }
+  d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+                  intgroup.df, name = colData(object)[,1])
+  if (returnData) {
+    attr(d, "percentVar") <- percentVar[1:2]
+    return(d)
+  }
+    ggplot(data = d, aes_string(x = "PC1", y = "PC2", color = "group", label = "name")) + geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) + coord_fixed() + geom_text_repel(size=3) 
+}
+
+#0.2. PC1 and PC3
+plotPCA.13 <- function (object, intgroup = "condition", ntop = 5000, returnData = FALSE) 
+{
+  rv <- rowVars(assay(object))
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, 
+                                                     length(rv)))]
+  pca <- prcomp(t(assay(object)[select, ]))
+  percentVar <- pca$sdev^2/sum(pca$sdev^2)
+  if (!all(intgroup %in% names(colData(object)))) {
+    stop("the argument 'intgroup' should specify columns of colData(dds)")
+  }
+  intgroup.df <- as.data.frame(colData(object)[, intgroup, drop = FALSE])
+  group <- if (length(intgroup) > 1) {
+    factor(apply(intgroup.df, 1, paste, collapse = " : "))
+  }
+  else {
+    colData(object)[[intgroup]]
+  }
+  d <- data.frame(PC1 = pca$x[, 1], PC3 = pca$x[, 3], group = group, 
+                  intgroup.df, name = colData(object)[,1])
+  if (returnData) {
+    attr(d, "percentVar") <- percentVar[1:3]
+    return(d)
+  }
+    ggplot(data = d, aes_string(x = "PC1", y = "PC3", color = "group", label = "name")) + geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) + ylab(paste0("PC3: ", round(percentVar[3] * 100), "% variance")) + coord_fixed() + geom_text_repel(size=3) 
+}
+
+#0.3. PC2 and PC3
+plotPCA.23 <- function (object, intgroup = "condition", ntop = 5000, returnData = FALSE) 
+{
+  rv <- rowVars(assay(object))
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, 
+                                                     length(rv)))]
+  pca <- prcomp(t(assay(object)[select, ]))
+  percentVar <- pca$sdev^2/sum(pca$sdev^2)
+  if (!all(intgroup %in% names(colData(object)))) {
+    stop("the argument 'intgroup' should specify columns of colData(dds)")
+  }
+  intgroup.df <- as.data.frame(colData(object)[, intgroup, drop = FALSE])
+  group <- if (length(intgroup) > 1) {
+    factor(apply(intgroup.df, 1, paste, collapse = " : "))
+  }
+  else {
+    colData(object)[[intgroup]]
+  }
+  d <- data.frame(PC2= pca$x[, 2], PC3 = pca$x[, 3], group = group, 
+                  intgroup.df, name = colData(object)[,1])
+  if (returnData) {
+    attr(d, "percentVar") <- percentVar[2:3]
+    return(d)
+  }
+    ggplot(data = d, aes_string(x = "PC2", y = "PC3", color = "group", label = "name")) + geom_point(size = 3) + xlab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) + ylab(paste0("PC3: ", round(percentVar[3] * 100), "% variance")) + coord_fixed() + geom_text_repel(size=3) 
+}
+
+#0.2. PC1 and PC4
+plotPCA.14 <- function (object, intgroup = "condition", ntop = 5000, returnData = FALSE) 
+{
+  rv <- rowVars(assay(object))
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, 
+                                                     length(rv)))]
+  pca <- prcomp(t(assay(object)[select, ]))
+  percentVar <- pca$sdev^2/sum(pca$sdev^2)
+  if (!all(intgroup %in% names(colData(object)))) {
+    stop("the argument 'intgroup' should specify columns of colData(dds)")
+  }
+  intgroup.df <- as.data.frame(colData(object)[, intgroup, drop = FALSE])
+  group <- if (length(intgroup) > 1) {
+    factor(apply(intgroup.df, 1, paste, collapse = " : "))
+  }
+  else {
+    colData(object)[[intgroup]]
+  }
+  d <- data.frame(PC1 = pca$x[, 1], PC4 = pca$x[, 4], group = group, 
+                  intgroup.df, name = colData(object)[,1])
+  if (returnData) {
+    attr(d, "percentVar") <- percentVar[1:4]
+    return(d)
+  }
+  ggplot(data = d, aes_string(x = "PC1", y = "PC4", color = "group", label = "name")) + geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) + ylab(paste0("PC4: ", round(percentVar[4] * 100), "% variance")) + coord_fixed() + geom_text_repel(size=3) 
+}
+
+#0.2. PC1 and PC5
+plotPCA.15 <- function (object, intgroup = "condition", ntop = 5000, returnData = FALSE) 
+{
+  rv <- rowVars(assay(object))
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, 
+                                                     length(rv)))]
+  pca <- prcomp(t(assay(object)[select, ]))
+  percentVar <- pca$sdev^2/sum(pca$sdev^2)
+  if (!all(intgroup %in% names(colData(object)))) {
+    stop("the argument 'intgroup' should specify columns of colData(dds)")
+  }
+  intgroup.df <- as.data.frame(colData(object)[, intgroup, drop = FALSE])
+  group <- if (length(intgroup) > 1) {
+    factor(apply(intgroup.df, 1, paste, collapse = " : "))
+  }
+  else {
+    colData(object)[[intgroup]]
+  }
+  d <- data.frame(PC1 = pca$x[, 1], PC5 = pca$x[, 5], group = group, 
+                  intgroup.df, name = colData(object)[,1])
+  if (returnData) {
+    attr(d, "percentVar") <- percentVar[1:5]
+    return(d)
+  }
+  ggplot(data = d, aes_string(x = "PC1", y = "PC5", color = "group", label = "name")) + geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) + ylab(paste0("PC5: ", round(percentVar[5] * 100), "% variance")) + coord_fixed() + geom_text_repel(size=3)   
+}
+
+############################################################################################ P*
+
+
+##### Q* Bulk RNAseq data analysis
+
+rm(list=ls())
+
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("DESeq2")
+
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("EnhancedVolcano")
+
+# Packages used
+library(DESeq2)
+library(ggplot2)
+library(ggrepel)
+library(EnhancedVolcano)
+
+setwd('my/folder/path')
+
+# Call the conditions for the PCA analyses
+source("PCA_script.R")
+
+# Import gene expression matrix
+gene_expression_matrix <- read.table('gene_expression_matrix.txt',header = TRUE)
+
+# Import metadata
+Metadata <- read.csv('Metadata_for_gene_expression.csv')
+
+# Import list of genes on ChrVI and ChrUn
+Genes_in_ChrVI<-read.table('AnnotationChrVI_onlygenes.txt')
+Genes_in_ChrUn<-read.table('AnnotationChrUnMappingToChrXIV_onlygenes.txt')
+
+rownames(Metadata) <- Metadata$Sample
+
+head(gene_expression_matrix)
+tail(gene_expression_matrix)
+
+# Eliminate the last 5 rows which contain statistical data that is not needed
+gene_expression_matrix <- head(gene_expression_matrix,-5) 
+
+rownames(gene_expression_matrix) <- gene_expression_matrix$Gene
+gene_expression_matrix <- gene_expression_matrix[,-1]
+
+# Remove the genes that are not expressed or are minimally so, while also constraining to at least 3 replicates expressing the gene
+gene_expression_matrix <- gene_expression_matrix[rowSums(gene_expression_matrix>10)>3,]
+
+head(Metadata)
+
+### The following analyses is to veryfy that no sample was swapped. PS and DS samples should cluster in separate groups (they do)
+deseq_matrix <- DESeqDataSetFromMatrix(countData = gene_expression_matrix, colData = Metadata, design = ~ Tissue + Days + Origin)
+# Notmalization
+dds <- DESeq(deseq_matrix)
+
+# Apply a log transformation so that one gene does not drive the whole analysis
+vst <- varianceStabilizingTransformation(dds) 
+
+# Plot PCAs colouring by tissue, age and origin
+plotPCA.12(vst,intgroup=c('Tissue'))
+plotPCA.12(vst,intgroup=c('Days'))
+plotPCA.12(vst,intgroup=c('Origin'))
+
+res <- results(dds)
+head(res)
+resultsNames(dds)
+
+res_tissue <- results(dds,name='Tissue_PS_vs_DS')
+res_tissue <- na.omit(res_tissue)
+res_tissue$log2FoldChange <- as.numeric(res_tissue$log2FoldChange)
+res_tissue_sig <- res_tissue[res_tissue$padj<0.05,]
+
+# Volcano plot of genes DS vs PS
+EnhancedVolcano(res_tissue,lab=rownames(res_tissue),x='log2FoldChange',y='padj')
+
+
+### Here we take the samples belonging specifically to the Dorsal Spine
+Metadata_DS <- Metadata[Metadata$Tissue=='DS',]
+gene_expression_matrix_DS <- gene_expression_matrix[,colnames(gene_expression_matrix) %in% Metadata_DS$Sample]
+
+# Remove the genes that are not expressed or are minimally so, while also constraining to at least 3 replicates expressing the gene
+gene_expression_matrix_DS <- gene_expression_matrix_DS[rowSums(gene_expression_matrix_DS>10)>3,]
+
+# Check for clustering according to our groups Marine vs SCAD for the dorsal spine
+deseq_matrix_DS <- DESeqDataSetFromMatrix(countData = gene_expression_matrix_DS, colData = Metadata_DS, design = ~  Days + Origin)
+
+# Notmalization and log transformation
+dds_DS <- DESeq(deseq_matrix_DS)
+vst_DS <- varianceStabilizingTransformation(dds_DS)
+
+# PCA plots coloured by origin
+# PC1 vs PC2
+plotPCA.12(vst_DS,intgroup=c('Origin'))
+# PC2 vs PC3
+plotPCA.23(vst_DS,intgroup=c('Origin'))
+
+# PCA plots coloured by age
+# PC1 vs PC2
+plotPCA.12(vst_DS,intgroup=c('Days'))
+# PC2 vs PC3
+plotPCA.23(vst_DS,intgroup=c('Days'))
+# PC1 vs PC4
+plotPCA.14(vst_DS,intgroup=c('Days'))
+# PC1 vs PC5
+plotPCA.15(vst_DS,intgroup=c('Days'))
+
+### Gene expression matrix and metadata are filtered to contain only DS tissue from SCAD samples
+Metadata_DS_SCAD <- Metadata[Metadata$Origin=='SCAD' & Metadata$Tissue=='DS',]
+gene_expression_matrix_DS_SCAD <- gene_expression_matrix[,colnames(gene_expression_matrix) %in% Metadata_DS_SCAD$Sample]
+gene_expression_matrix_DS_SCAD <- gene_expression_matrix_DS_SCAD[rowSums(gene_expression_matrix_DS_SCAD>10)>3,,]
+
+deseq_matrix_DS_SCAD <- DESeqDataSetFromMatrix(countData = gene_expression_matrix_DS_SCAD, colData = Metadata_DS_SCAD, design = ~  Days)
+
+# Notmalization and log transformation
+dds_DS_SCAD <- DESeq(deseq_matrix_DS_SCAD)
+vst_DS_SCAD <- varianceStabilizingTransformation(dds_DS_SCAD)
+
+# PCA plots coloured by age
+# PC1 vs PC2
+plotPCA.12(vst_DS_SCAD,intgroup=c('Days'))
+# PC2 vs PC3
+plotPCA.23(vst_DS_SCAD,intgroup=c('Days'))
+
+### Gene expression matrix and metadata are filtered to contain only DS tissue from Marine samples
+Metadata_DS_Marine <- Metadata[Metadata$Origin=='DUIN' & Metadata$Tissue=='DS',]
+gene_expression_matrix_DS_Marine <- gene_expression_matrix[,colnames(gene_expression_matrix) %in% Metadata_DS_Marine$Sample]
+gene_expression_matrix_DS_Marine <- gene_expression_matrix_DS_Marine[rowSums(gene_expression_matrix_DS_Marine>10)>3,,]
+
+deseq_matrix_DS_Marine <- DESeqDataSetFromMatrix(countData = gene_expression_matrix_DS_Marine, colData = Metadata_DS_Marine, design = ~  Days)
+
+# Notmalization and log transformation
+dds_DS_Marine <- DESeq(deseq_matrix_DS_Marine)
+vst_DS_Marine <- varianceStabilizingTransformation(dds_DS_Marine)
+
+# PCA plots coloured by age
+# PC1 vs PC2
+plotPCA.12(vst_DS_Marine,intgroup=c('Days'))
+# PC2 vs PC3
+plotPCA.23(vst_DS_Marine,intgroup=c('Days'))
+
+
+###############################################################
+res_DS <- results(dds_DS)
+head(res_DS)
+resultsNames(dds_DS)
+
+res_tissue_DS <- results(dds_DS,name='Origin_SCAD_vs_DUIN')
+res_tissue_DS <- na.omit(res_tissue_DS)
+res_tissue_DS$log2FoldChange <- as.numeric(res_tissue_DS$log2FoldChange)
+res_tissue_DS_sig <- res_tissue_DS[res_tissue_DS$padj<10e-2 & abs(res_tissue_DS$log2FoldChange)>1,]
+
+EnhancedVolcano(title='Dorsal spine: present vs. absent',res_tissue_DS,lab=rownames(res_tissue_DS),x='log2FoldChange',y='padj', labSize = 0,  pCutoff=10e-2,FCcutoff = 1)
+
+# Export a table with differentially expressed genes
+#write.csv(res_tissue_DS, file = "res_tissue_DS.csv", row.names = TRUE)
+
+### The following analysis is to check only the genes in Chr VI
+res_tissue_DS_chrVI <- res_tissue_DS[rownames(res_tissue_DS) %in% as.character(Genes_in_ChrVI$V1),]
+head(res_tissue_DS_chrVI)
+EnhancedVolcano(title='Dorsal spine: present vs. absent in Chr VI',res_tissue_DS_chrVI,lab=rownames(res_tissue_DS_chrVI),x='log2FoldChange',y='padj', labSize = 0,  pCutoff=10e-10,FCcutoff = 1.5)
+
+
+
+#Is any of the genes ammong the ones in the regions of interest?
+Genes_in_ChrVI$V1 %in% rownames(res_tissue_DS_sig)
+
+matching_genes_ChrVI <- Genes_in_ChrVI$V1 %in% rownames(res_tissue_DS_sig)
+# Use this logical vector to get the actual gene names from Genes_in_ChrVI$V1
+genes_in_both_ChrVI <- Genes_in_ChrVI$V1[matching_genes_ChrVI]
+# Assuming genes_in_both now contains the matching gene names, one can extract the row names corresponding to these genes if needed. (Note: This step may not be necessary if genes_in_both already contains what one needs)
+matching_row_names_ChrVI <- rownames(res_tissue_DS_sig)[rownames(res_tissue_DS_sig) %in% genes_in_both_ChrVI]
+# Optionally print or store the result
+print(matching_row_names_ChrVI)
+
+
+### Heatmap
+# Packages used
+library(pheatmap)
+library(viridis)
+
+annotation_columns <- Metadata_DS[,c(3:4)]
+column_colors <- list(Origin = c(DUIN = '#f3766e', SCAD = '#1cbdc2'),
+                      Days = c('10days' =  '#fde725', '13days' = '#35b779', '16days' = '#31688e', '19days' = '#440154'))
+
+heat_plot <- pheatmap(assay(vst_DS)[res_tissue_DS$padj<1e-5 & abs(res_tissue_DS$log2FoldChange)>1,],
+                      #log(counts(dds,normalized=T)+1)[res_tissue_DS$padj<10e-10 & abs(res_tissue_DS$log2FoldChange)>1,],
+                      col = inferno(100), # choose a colour scale for your data
+                      cluster_rows = T, cluster_cols = T, # set to FALSE if you want to remove the dendograms
+                      clustering_distance_cols = 'euclidean',
+                      clustering_distance_rows = 'euclidean',
+                      clustering_method = 'ward.D',
+                      scale = 'row',
+                      #cutree_cols = 2,
+                      annotation_col = annotation_columns, # column (sample) annotations
+                      annotation_colors = column_colors, # colours for your annotations 
+                      annotation_names_col = T,
+                      #annotation_row = gene_functions_df, # row (gene) annotations
+                      #annotation_names_row = F,
+                      fontsize_row = 10,  # row label font size
+                      fontsize_col = 7,  # column label font size 
+                      angle_col = 45, # sample names at an angle
+                      legend_breaks = c(-2, 0, 2), # legend customisation
+                      legend_labels = c("Low", "Medium", "High"), # legend customisation
+                      show_colnames = T, show_rownames = F, # displaying column and row names
+                      main = "Heatmap dorsal spine") # a title for our heatmap
+
+### Here we take the samples belonging specifically to the Dorsal Spine and segregated by age
+Metadata_DS_10d <- Metadata_DS[Metadata_DS$Days=='10days',]
+Metadata_DS_13d <- Metadata_DS[Metadata_DS$Days=='13days',]
+Metadata_DS_16d <- Metadata_DS[Metadata_DS$Days=='16days',]
+Metadata_DS_19d <- Metadata_DS[Metadata_DS$Days=='19days',]
+gene_expression_matrix_DS_10d <- gene_expression_matrix[,colnames(gene_expression_matrix) %in% Metadata_DS_10d$Sample]
+gene_expression_matrix_DS_13d <- gene_expression_matrix[,colnames(gene_expression_matrix) %in% Metadata_DS_13d$Sample]
+gene_expression_matrix_DS_16d <- gene_expression_matrix[,colnames(gene_expression_matrix) %in% Metadata_DS_16d$Sample]
+gene_expression_matrix_DS_19d <- gene_expression_matrix[,colnames(gene_expression_matrix) %in% Metadata_DS_19d$Sample]
+gene_expression_matrix_DS_10d <- gene_expression_matrix_DS_10d[rowSums(gene_expression_matrix_DS_10d>5)>3,] ###I have used 10 before, changed it to 5
+gene_expression_matrix_DS_13d <- gene_expression_matrix_DS_13d[rowSums(gene_expression_matrix_DS_13d>5)>3,] ###I have used 10 before, changed it to 5
+gene_expression_matrix_DS_16d <- gene_expression_matrix_DS_16d[rowSums(gene_expression_matrix_DS_16d>5)>3,] ###I have used 10 before, changed it to 5
+gene_expression_matrix_DS_19d <- gene_expression_matrix_DS_19d[rowSums(gene_expression_matrix_DS_19d>5)>3,] ###I have used 10 before, changed it to 5 #### I lose gene-LOC120831793 at this stage
+
+### For 10days
+deseq_matrix_DS_10d <- DESeqDataSetFromMatrix(countData = gene_expression_matrix_DS_10d, colData = Metadata_DS_10d, design = ~ Origin)
+dds_DS_10d <- DESeq(deseq_matrix_DS_10d)
+vst_DS_10d <- varianceStabilizingTransformation(dds_DS_10d)
+plotPCA(vst_DS_10d,intgroup=c('Origin')) #PCA of the samples of Pelvic Spines at 10days
+plotPCA.23(vst_DS_10d,intgroup=c('Origin')) #Checks the PC2 vs PC3
+
+res_DS_10d <- results(dds_DS_10d)
+head(res_DS_10d)
+resultsNames(dds_DS_10d)
+
+res_tissue_DS_10d <- results(dds_DS_10d,name='Origin_SCAD_vs_DUIN')
+res_tissue_DS_10d <- na.omit(res_tissue_DS_10d)
+res_tissue_DS_10d$log2FoldChange <- as.numeric(res_tissue_DS_10d$log2FoldChange)
+res_tissue_DS_10d_sig <- res_tissue_DS_10d[res_tissue_DS_10d$padj<10e-10 & abs(res_tissue_DS_10d$log2FoldChange)>1.5,]
+
+EnhancedVolcano(title='Pelvic spine: present vs. absent',res_tissue_DS_10d,lab=rownames(res_tissue_DS_10d),x='log2FoldChange',y='padj', labSize = 0,  pCutoff=10e-10,FCcutoff = 1.5)
+
+#The following is to check only the genes in Chr VI for day 10.
+res_tissue_DS_10d_chrVI <- res_tissue_DS_10d[rownames(res_tissue_DS_10d) %in% as.character(Genes_in_ChrVI$V1),]
+head(res_tissue_DS_10d_chrVI)
+EnhancedVolcano(title='Pelvic spine day 10:\npresent vs. absent in Chr VI',res_tissue_DS_10d_chrVI,lab=rownames(res_tissue_DS_10d_chrVI), x='log2FoldChange',y='padj', labSize = 0, pCutoff=10,FCcutoff = 0.5)  #pCutoff=10e-10,FCcutoff = 1.5)
+
+####### COLOR CODE THE VOLCANOS #######
+rtp4_10d<-res_tissue_DS_10d_chrVI
+#now calc gene midpoint for each gene on chr4:
+mdp_10d<-NULL
+for(i in 1:nrow(rtp4_10d)){
+  mdp_10d<-c(mdp_10d, gr$midpt[which(gr$name==row.names(rtp4_10d)[i])])
+}
+rtp4_10d<-cbind(rtp4_10d, mdp_10d)
+head(rtp4_10d)
+
+# now can plot fold change with peak proximity:
+peak<-18159274 # location of AFD peak
+fl<-2000000 # margin on each side of afd peak, in bp, within whih a gene is considered
+r4_10d<-rtp4_10d[which((rtp4_10d$mdp_10d>=peak-fl) & (rtp4_10d$mdp_10d<=peak+fl)),] # just the genes within that chr sector
+intens_10d<-NULL # collects the distances from peak
+
+for(i in 1:nrow(rtp4_10d)){intens_10d<-c(intens_10d, abs(rtp4_10d[i, 'mdp_10d']-peak))} #USE THIS FOR WHOLE CHROMOSOME VI
+intens_WholeChrVI_10d<-intens_10d/max(rtp4_10d$mdp_10d)
+rtp4_10d<-cbind(rtp4_10d, intens_WholeChrVI_10d) #USE THIS FOR WHOLE CHROMOSOME VI
+head(rtp4_10d)
+
+### IF YOU WANT THE TABLE OF GENES, P-VANUELS, LOGGFOLD CHANGE AND DISTANCE FOLLOW THIS ###
+# for(i in 1:nrow(rtp4_10d)){intens_10d<-c(intens_10d, abs(rtp4_10d[i, 'mdp_10d']-peak))}
+# TABLE_NEEDED_10d<-cbind(rtp4_10d, intens_WholeChrVI_10d)
+# TABLE_NEEDED_10d<-cbind(,TABLE_NEEDED_10d)
+#####################################################
+
+### COLORCODING VOLCANOPLOT FOR THE ENTIRE CHR VI
+# Apply the color function to the 'intens' column
+head(rtp4_10d)
+#color_fun <- colorRampPalette(c('red', 'yellow', 'green', 'blue', 'purple'))
+color_fun <- colorRampPalette(c('#000000', '#d0d0d0', '#e1e1e1','#ececec', '#f6f6f6'))
+intens_colors_10d <- color_fun(1000)[cut(as.numeric(rtp4_10d$intens_WholeChrVI_10d), breaks = 1000)]
+
+# Create a named vector for custom colors
+custom_colors_10d <- setNames(intens_colors_10d, rownames(rtp4_10d))
+
+ev_plot_10d  <- EnhancedVolcano(title='Pelvic spine day 10:\npresent vs. absent in Chr VI',rtp4_10d,lab=rownames(rtp4_10d),x='log2FoldChange',y='padj', colCustom = custom_colors_10d, labSize = 1, pCutoff=10,FCcutoff = 0.5) #Use  pCutoff=10,FCcutoff = 0) for all data
+print(ev_plot_10d)
+# Remove the legend for the color
+ev_plot_10d  <- EnhancedVolcano(title='Pelvic spine day 10:\npresent vs. absent in Chr VI',rtp4_10d,lab=NA,x='log2FoldChange',y='padj', xlim=c(-8,8), colCustom = custom_colors_10d, labSize = 1, pCutoff=10,FCcutoff = 0, pointSize = 3, axisLabSize = 20, titleLabSize = 22) #Use  pCutoff=10,FCcutoff = 0) for all data
+ev_plot_10d <- ev_plot_10d  + guides(color = FALSE)
+# Display the plot
+print(ev_plot_10d)
+################################## HERE ENDS THE COLOUR CODING OF VOLCANO ###################################
+
+# What highly differentiated genes are also present in chromosomes of interest:
+Genes_in_ChrVI$V1 %in% rownames(res_tissue_DS_10d_sig)
+
+matching_genes_DS_10d_ChrVI <- Genes_in_ChrVI$V1 %in% rownames(res_tissue_DS_10d_sig)
+# Use this logical vector to get the actual gene names from Genes_in_ChrVI$V1
+genes_in_both_DS_10d_ChrVI <- Genes_in_ChrVI$V1[matching_genes_DS_10d_ChrVI]
+# Assuming genes_in_both now contains the matching gene names,
+# you can extract the row names corresponding to these genes if needed.
+# (Note: This step may not be necessary if genes_in_both already contains what you need)
+matching_row_names_DS_10d_ChrVI <- rownames(res_tissue_DS_10d_sig)[rownames(res_tissue_DS_10d_sig) %in% genes_in_both_DS_10d_ChrVI]
+# Optionally print or store the result
+print(matching_row_names_DS_10d_ChrVI)
+
+#### For 13days
+deseq_matrix_DS_13d <- DESeqDataSetFromMatrix(countData = gene_expression_matrix_DS_13d, colData = Metadata_DS_13d, design = ~ Origin)
+dds_DS_13d <- DESeq(deseq_matrix_DS_13d)
+vst_DS_13d <- varianceStabilizingTransformation(dds_DS_13d)
+plotPCA(vst_DS_13d,intgroup=c('Origin')) #PCA of the samples of PelVIc Spines at 13days
+plotPCA.23(vst_DS_13d,intgroup=c('Origin')) #Checks the PC2 vs PC3
+
+res_DS_13d <- results(dds_DS_13d)
+head(res_DS_13d)
+resultsNames(dds_DS_13d)
+
+res_tissue_DS_13d <- results(dds_DS_13d,name='Origin_SCAD_vs_DUIN')
+res_tissue_DS_13d <- na.omit(res_tissue_DS_13d)
+res_tissue_DS_13d$log2FoldChange <- as.numeric(res_tissue_DS_13d$log2FoldChange)
+res_tissue_DS_13d_sig <- res_tissue_DS_13d[res_tissue_DS_13d$padj<10e-10 & abs(res_tissue_DS_13d$log2FoldChange)>1.5,]
+
+EnhancedVolcano(title='PelVIc spine: present vs. absent',res_tissue_DS_13d,lab=rownames(res_tissue_DS_13d),x='log2FoldChange',y='padj', labSize = 0,  pCutoff=10e-10,FCcutoff = 1.5)
+
+#The following is to check only the genes in Chr VI for day 13.
+res_tissue_DS_13d_chrVI <- res_tissue_DS_13d[rownames(res_tissue_DS_13d) %in% as.character(Genes_in_ChrVI$V1),]
+head(res_tissue_DS_13d_chrVI)
+EnhancedVolcano(title='PelVIc spine in day 13:\npresent vs. absent in Chr VI',res_tissue_DS_13d_chrVI,lab=rownames(res_tissue_DS_13d_chrVI),x='log2FoldChange',y='padj', labSize = 0,  pCutoff=10e-10,FCcutoff = 1.5)
+
+####### COLOR CODE THE VOLCANOS #######
+rtp4_13d<-res_tissue_DS_13d_chrVI
+#now calc gene midpoint for each gene on chr4:
+mdp_13d<-NULL
+for(i in 1:nrow(rtp4_13d)){
+  mdp_13d<-c(mdp_13d, gr$midpt[which(gr$name==row.names(rtp4_13d)[i])])
+}
+rtp4_13d<-cbind(rtp4_13d, mdp_13d)
+head(rtp4_13d)
+
+# now can plot fold change with peak proximity:
+peak<-18159274 # location of AFD peak
+fl<-2000000 # margin on each side of afd peak, in bp, within whih a gene is considered
+r4_13d<-rtp4_13d[which((rtp4_13d$mdp_13d>=peak-fl) & (rtp4_13d$mdp_13d<=peak+fl)),] # just the genes within that chr sector
+intens_13d<-NULL # collects the distances from peak
+
+for(i in 1:nrow(rtp4_13d)){intens_13d<-c(intens_13d, abs(rtp4_13d[i, 'mdp_13d']-peak))} #USE THIS FOR WHOLE CHROMOSOME VI
+intens_WholeChrVI_13d<-intens_13d/max(rtp4_13d$mdp_13d)
+rtp4_13d<-cbind(rtp4_13d, intens_WholeChrVI_13d) #USE THIS FOR WHOLE CHROMOSOME VI
+head(rtp4_13d)
+
+### IF YOU WANT THE TABLE OF GENES, P-VANUELS, LOGGFOLD CHANGE AND DISTANCE FOLLOW THIS ###
+# for(i in 1:nrow(rtp4_13d)){intens_13d<-c(intens_13d, abs(rtp4_13d[i, 'mdp_13d']-peak))}
+# TABLE_NEEDED_13d<-cbind(rtp4_13d, intens_WholeChrVI_13d)
+#TABLE_NEEDED_13d<-cbind(,TABLE_NEEDED_13d)
+#####################################################
+
+### COLORCODING VOLCANOPLOT FOR THE ENTIRE CHR VI 
+# Apply the color function to the 'intens' column
+head(rtp4_13d)
+#color_fun <- colorRampPalette(c('red', 'yellow', 'green', 'blue', 'purple'))
+color_fun <- colorRampPalette(c('#000000', '#d0d0d0', '#e1e1e1','#ececec', '#f6f6f6'))
+intens_colors_13d <- color_fun(1000)[cut(as.numeric(rtp4_13d$intens_WholeChrVI_13d), breaks = 1000)]
+
+# Create a named vector for custom colors
+custom_colors_13d <- setNames(intens_colors_13d, rownames(rtp4_13d))
+
+ev_plot_13d  <- EnhancedVolcano(title='PelVIc spine day 13:\npresent vs. absent in Chr VI',rtp4_13d,lab=rownames(rtp4_13d),x='log2FoldChange',y='padj', colCustom = custom_colors_13d, labSize = 1, pCutoff=10,FCcutoff = 0.5) #Use  pCutoff=10,FCcutoff = 0) for all data
+print(ev_plot_13d )
+# Remove the legend for the color
+ev_plot_13d  <- EnhancedVolcano(title='PelVIc spine day 13:\npresent vs. absent in Chr VI',rtp4_13d,lab=NA,x='log2FoldChange',y='padj', xlim=c(-8,8), colCustom = custom_colors_13d, labSize = 1, pCutoff=10,FCcutoff = 0, pointSize = 3, axisLabSize = 20, titleLabSize = 22) #Use  pCutoff=10,FCcutoff = 0) for all data
+ev_plot_13d <- ev_plot_13d  + guides(color = FALSE)
+# Display the plot
+print(ev_plot_13d)
+################################## HERE ENDS THE COLOUR CODING OF VOLCANO ###################################
+
+# What highly differentiated genes are also present in chromosomes of interest:
+Genes_in_ChrVI$V1 %in% rownames(res_tissue_DS_13d_sig)
+Genes_in_ChrVI$V1 %in% rownames(res_tissue_DS_13d_sig)
+
+matching_genes_DS_13d_ChrVI <- Genes_in_ChrVI$V1 %in% rownames(res_tissue_DS_13d_sig)
+# Use this logical vector to get the actual gene names from Genes_in_ChrVI$V1
+genes_in_both_DS_13d_ChrVI <- Genes_in_ChrVI$V1[matching_genes_DS_13d_ChrVI]
+# Assuming genes_in_both now contains the matching gene names,
+# you can extract the row names corresponding to these genes if needed.
+# (Note: This step may not be necessary if genes_in_both already contains what you need)
+matching_row_names_DS_13d_ChrVI <- rownames(res_tissue_DS_13d_sig)[rownames(res_tissue_DS_13d_sig) %in% genes_in_both_DS_13d_ChrVI]
+# Optionally print or store the result
+print(matching_row_names_DS_13d_ChrVI)
+
+#### For 16days
+deseq_matrix_DS_16d <- DESeqDataSetFromMatrix(countData = gene_expression_matrix_DS_16d, colData = Metadata_DS_16d, design = ~ Origin)
+dds_DS_16d <- DESeq(deseq_matrix_DS_16d)
+vst_DS_16d <- varianceStabilizingTransformation(dds_DS_16d)
+plotPCA(vst_DS_16d,intgroup=c('Origin')) #PCA of the samples of PelVIc Spines at 16days
+plotPCA.23(vst_DS_16d,intgroup=c('Origin')) #Checks the PC2 vs PC3
+
+res_DS_16d <- results(dds_DS_16d)
+head(res_DS_16d)
+resultsNames(dds_DS_16d)
+
+res_tissue_DS_16d <- results(dds_DS_16d,name='Origin_SCAD_vs_DUIN')
+res_tissue_DS_16d <- na.omit(res_tissue_DS_16d)
+res_tissue_DS_16d$log2FoldChange <- as.numeric(res_tissue_DS_16d$log2FoldChange)
+res_tissue_DS_16d_sig <- res_tissue_DS_16d[res_tissue_DS_16d$padj<10e-10 & abs(res_tissue_DS_16d$log2FoldChange)>1.5,]
+
+EnhancedVolcano(title='PelVIc spine: present vs. absent',res_tissue_DS_16d,lab=rownames(res_tissue_DS_16d),x='log2FoldChange',y='padj', labSize = 0,  pCutoff=10e-10,FCcutoff = 1.5)
+
+#The following is to check only the genes in Chr VI for day 16.
+res_tissue_DS_16d_chrVI <- res_tissue_DS_16d[rownames(res_tissue_DS_16d) %in% as.character(Genes_in_ChrVI$V1),]
+head(res_tissue_DS_16d_chrVI)
+EnhancedVolcano(title='PelVIc spine: present vs. absent in Chr VI',res_tissue_DS_16d_chrVI,lab=rownames(res_tissue_DS_16d_chrVI),x='log2FoldChange',y='padj', labSize = 0,  pCutoff=10,FCcutoff = 0.5)
+
+####### COLOR CODE THE VOLCANOS #######
+rtp4_16d<-res_tissue_DS_16d_chrVI
+#now calc gene midpoint for each gene on chr4:
+mdp_16d<-NULL
+for(i in 1:nrow(rtp4_16d)){
+  mdp_16d<-c(mdp_16d, gr$midpt[which(gr$name==row.names(rtp4_16d)[i])])
+}
+rtp4_16d<-cbind(rtp4_16d, mdp_16d)
+head(rtp4_16d)
+
+# now can plot fold change with peak proximity:
+peak<-18159274 # location of AFD peak
+fl<-2000000 # margin on each side of afd peak, in bp, within whih a gene is considered
+r4_16d<-rtp4_16d[which((rtp4_16d$mdp_16d>=peak-fl) & (rtp4_16d$mdp_16d<=peak+fl)),] # just the genes within that chr sector
+intens_16d<-NULL # collects the distances from peak
+
+for(i in 1:nrow(rtp4_16d)){intens_16d<-c(intens_16d, abs(rtp4_16d[i, 'mdp_16d']-peak))} #USE THIS FOR WHOLE CHROMOSOME VI
+intens_WholeChrVI_16d<-intens_16d/max(rtp4_16d$mdp_16d)
+rtp4_16d<-cbind(rtp4_16d, intens_WholeChrVI_16d) #USE THIS FOR WHOLE CHROMOSOME VI
+head(rtp4_16d)
+
+### IF YOU WANT THE TABLE OF GENES, P-VANUELS, LOGGFOLD CHANGE AND DISTANCE FOLLOW THIS ###
+# for(i in 1:nrow(rtp4_16d)){intens_16d<-c(intens_16d, abs(rtp4_16d[i, 'mdp_16d']-peak))}
+# TABLE_NEEDED_16d<-cbind(rtp4_16d, intens_WholeChrVI_16d)
+#TABLE_NEEDED_16d<-cbind(,TABLE_NEEDED_16d)
+#####################################################
+
+### COLORCODING VOLCANOPLOT FOR THE ENTIRE CHR VI 
+# Apply the color function to the 'intens' column
+head(rtp4_16d)
+#color_fun <- colorRampPalette(c('red', 'yellow', 'green', 'blue', 'purple'))
+#
+color_fun <- colorRampPalette(c('#000000', '#d0d0d0', '#e1e1e1','#ececec', '#f6f6f6'))
+intens_colors_16d <- color_fun(1000)[cut(as.numeric(rtp4_16d$intens_WholeChrVI_16d), breaks = 1000)]
+
+# Create a named vector for custom colors
+custom_colors_16d <- setNames(intens_colors_16d, rownames(rtp4_16d))
+
+ev_plot_16d  <- EnhancedVolcano(title='PelVIc spine day 16:\npresent vs. absent in Chr VI',rtp4_16d,lab=rownames(rtp4_16d),x='log2FoldChange',y='padj', colCustom = custom_colors_16d, labSize = 1, pCutoff=10,FCcutoff = 0.5) #Use  pCutoff=10,FCcutoff = 0) for all data
+print(ev_plot_16d )
+# Remove the legend for the color
+ev_plot_16d  <- EnhancedVolcano(title='PelVIc spine day 16:\npresent vs. absent in Chr VI',rtp4_16d,lab=NA,x='log2FoldChange',y='padj', xlim=c(-8,8), colCustom = custom_colors_16d, labSize = 1, pCutoff=10,FCcutoff = 0, pointSize = 3, axisLabSize = 20, titleLabSize = 22) #Use  pCutoff=10,FCcutoff = 0) for all data
+ev_plot_16d <- ev_plot_16d  + guides(color = FALSE)
+# Display the plot
+print(ev_plot_16d)
+################################## HERE ENDS THE COLOUR CODING OF VOLCANO ###################################
+
+# What highly differentiated genes are also present in chromosomes of interest:
+Genes_in_ChrVI$V1 %in% rownames(res_tissue_DS_16d_sig)
+
+matching_genes_DS_16d_ChrVI <- Genes_in_ChrVI$V1 %in% rownames(res_tissue_DS_16d_sig)
+# Use this logical vector to get the actual gene names from Genes_in_ChrVI$V1
+genes_in_both_DS_16d_ChrVI <- Genes_in_ChrVI$V1[matching_genes_DS_16d_ChrVI]
+# Assuming genes_in_both now contains the matching gene names,
+# you can extract the row names corresponding to these genes if needed.
+# (Note: This step may not be necessary if genes_in_both already contains what you need)
+matching_row_names_DS_16d_ChrVI <- rownames(res_tissue_DS_16d_sig)[rownames(res_tissue_DS_16d_sig) %in% genes_in_both_DS_16d_ChrVI]
+# Optionally print or store the result
+print(matching_row_names_DS_16d_ChrVI)
+
+#### For 19days
+deseq_matrix_DS_19d <- DESeqDataSetFromMatrix(countData = gene_expression_matrix_DS_19d, colData = Metadata_DS_19d, design = ~ Origin)
+dds_DS_19d <- DESeq(deseq_matrix_DS_19d)
+vst_DS_19d <- varianceStabilizingTransformation(dds_DS_19d)
+plotPCA(vst_DS_19d,intgroup=c('Origin')) #PCA of the samples of PelVIc Spines at 19days
+plotPCA.23(vst_DS_19d,intgroup=c('Origin')) #Checks the PC2 vs PC3
+
+res_DS_19d <- results(dds_DS_19d)
+head(res_DS_19d)
+resultsNames(dds_DS_19d)
+
+res_tissue_DS_19d <- results(dds_DS_19d,name='Origin_SCAD_vs_DUIN')
+res_tissue_DS_19d <- na.omit(res_tissue_DS_19d)
+res_tissue_DS_19d$log2FoldChange <- as.numeric(res_tissue_DS_19d$log2FoldChange)
+res_tissue_DS_19d_sig <- res_tissue_DS_19d[res_tissue_DS_19d$padj<10e-10 & abs(res_tissue_DS_19d$log2FoldChange)>1.5,]
+
+EnhancedVolcano(title='PelVIc spine: present vs. absent',res_tissue_DS_19d,lab=rownames(res_tissue_DS_19d),x='log2FoldChange',y='padj', labSize = 0,  pCutoff=10e-10,FCcutoff = 1.5)
+
+#The following is to check only the genes in Chr VI for day 19.
+res_tissue_DS_19d_chrVI <- res_tissue_DS_19d[rownames(res_tissue_DS_19d) %in% as.character(Genes_in_ChrVI$V1),]
+head(res_tissue_DS_19d_chrVI)
+EnhancedVolcano(title='PelVIc spine: present vs. absent in Chr VI',res_tissue_DS_19d_chrVI,lab=rownames(res_tissue_DS_19d_chrVI),x='log2FoldChange',y='padj', labSize = 0,  pCutoff=10e-10,FCcutoff = 1.5)
+
+####### COLOR CODE THE VOLCANOS #######
+rtp4_19d<-res_tissue_DS_19d_chrVI
+#now calc gene midpoint for each gene on chr4:
+mdp_19d<-NULL
+for(i in 1:nrow(rtp4_19d)){
+  mdp_19d<-c(mdp_19d, gr$midpt[which(gr$name==row.names(rtp4_19d)[i])])
+}
+rtp4_19d<-cbind(rtp4_19d, mdp_19d)
+head(rtp4_19d)
+
+# now can plot fold change with peak proximity:
+peak<-18159274 # location of AFD peak
+fl<-2000000 # margin on each side of afd peak, in bp, within whih a gene is considered
+r4_19d<-rtp4_19d[which((rtp4_19d$mdp_19d>=peak-fl) & (rtp4_19d$mdp_19d<=peak+fl)),] # just the genes within that chr sector
+intens_19d<-NULL # collects the distances from peak
+
+for(i in 1:nrow(rtp4_19d)){intens_19d<-c(intens_19d, abs(rtp4_19d[i, 'mdp_19d']-peak))} #USE THIS FOR WHOLE CHROMOSOME VI
+intens_WholeChrVI_19d<-intens_19d/max(rtp4_19d$mdp_19d)
+rtp4_19d<-cbind(rtp4_19d, intens_WholeChrVI_19d) #USE THIS FOR WHOLE CHROMOSOME VI
+head(rtp4_19d)
+
+### IF YOU WANT THE TABLE OF GENES, P-VANUELS, LOGGFOLD CHANGE AND DISTANCE FOLLOW THIS ###
+# for(i in 1:nrow(rtp4_19d)){intens_19d<-c(intens_19d, abs(rtp4_19d[i, 'mdp_19d']-peak))}
+# TABLE_NEEDED_19d<-cbind(rtp4_19d, intens_WholeChrVI_19d)
+#TABLE_NEEDED_19d<-cbind(,TABLE_NEEDED_19d)
+#####################################################
+
+### COLORCODING VOLCANOPLOT FOR THE ENTIRE CHR VI 
+# Apply the color function to the 'intens' column
+head(rtp4_19d)
+#color_fun <- colorRampPalette(c('red', 'yellow', 'green', 'blue', 'purple'))
+#
+color_fun <- colorRampPalette(c('#000000', '#d0d0d0', '#e1e1e1','#ececec', '#f6f6f6'))
+intens_colors_19d <- color_fun(1000)[cut(as.numeric(rtp4_19d$intens_WholeChrVI_19d), breaks = 1000)]
+
+# Create a named vector for custom colors
+custom_colors_19d <- setNames(intens_colors_19d, rownames(rtp4_19d))
+
+ev_plot_19d  <- EnhancedVolcano(title='PelVIc spine day 19:\npresent vs. absent in Chr VI',rtp4_19d,lab=rownames(rtp4_19d),x='log2FoldChange',y='padj', colCustom = custom_colors_19d, labSize = 1, pCutoff=10,FCcutoff = 0.5) #Use  pCutoff=10,FCcutoff = 0) for all data
+print(ev_plot_19d )
+# Remove the legend for the color
+ev_plot_19d  <- EnhancedVolcano(title='PelVIc spine day 19:\npresent vs. absent in Chr VI',rtp4_19d,lab=NA,x='log2FoldChange',y='padj', xlim=c(-8,8), colCustom = custom_colors_19d, labSize = 1, pCutoff=10,FCcutoff = 0, pointSize = 3, axisLabSize = 20, titleLabSize = 22) #Use  pCutoff=10,FCcutoff = 0) for all data
+ev_plot_19d <- ev_plot_19d  + guides(color = FALSE)
+# Display the plot
+print(ev_plot_19d)
+################################## HERE ENDS THE COLOUR CODING OF VOLCANO ###################################
+
+# What highly differentiated genes are also present in chromosomes of interest:
+Genes_in_ChrVI$V1 %in% rownames(res_tissue_DS_19d_sig)
+
+matching_genes_DS_19d_ChrVI <- Genes_in_ChrVI$V1 %in% rownames(res_tissue_DS_19d_sig)
+# Use this logical vector to get the actual gene names from Genes_in_ChrVI$V1
+genes_in_both_DS_19d_ChrVI <- Genes_in_ChrVI$V1[matching_genes_DS_19d_ChrVI]
+# Assuming genes_in_both now contains the matching gene names,
+# you can extract the row names corresponding to these genes if needed.
+# (Note: This step may not be necessary if genes_in_both already contains what you need)
+matching_row_names_DS_19d_ChrVI <- rownames(res_tissue_DS_19d_sig)[rownames(res_tissue_DS_19d_sig) %in% genes_in_both_DS_19d_ChrVI]
+# Optionally print or store the result
+print(matching_row_names_DS_19d_ChrVI)
+
+
+
+#TO PRINT VOLCANO (DS) 10d
+print(ev_plot_10d)
+write.csv(rtp4_10d, "genes_DS_ChrVI_10d.csv", row.names = TRUE)
+#TO PRINT VOLCANO (DS) 13d
+print(ev_plot_13d)
+write.csv(rtp4_13d, "genes_DS_ChrVI_13d.csv", row.names = TRUE)
+#TO PRINT VOLCANO (DS) 16d
+print(ev_plot_16d)
+write.csv(rtp4_16d, "genes_DS_ChrVI_16d.csv", row.names = TRUE)
+#TO PRINT VOLCANO (DS) 19d
+print(ev_plot_19d)
+write.csv(rtp4_19d, "genes_DS_ChrVI_19d.csv", row.names = TRUE)
+
+
+### Here each differentially expressed gene can be ploted in boxplots to be visualized at every stage
+# Package used
+library(reshape2)
+
+# Transposition of gene expression matrix of DS samples
+gene_expression_matrix1 <- as.data.frame(t(gene_expression_matrix_DS))
+gene_expression_matrix1$Sample <- rownames(gene_expression_matrix1)
+
+# Normalise it by sample reads (we correct for over-read samples): the cpm matrix
+gene_expression_matrix2 <- t(t(gene_expression_matrix_DS)/colSums(gene_expression_matrix_DS)*1000000)
+
+# Substitute gene_expression_matrix2 for gene_expression_matrix1 instead in the next line to visualize the effect of normalization
+
+melt_gene_exp <- reshape2::melt(gene_expression_matrix2)
+
+colnames(melt_gene_exp) <- c('Gene','Sample','value')
+
+gene_expression_matrix_long <- reshape2::melt(gene_expression_matrix2, id.vars = "Sample", variable.name = "Gene")
+melt_gene_exp$Age <-with(Metadata, Days[match(melt_gene_exp$Sample,rownames(Metadata))])
+melt_gene_exp$Origin <-with(Metadata, Origin[match(melt_gene_exp$Sample,rownames(Metadata))])
+
+boxplots_gene_expression_Age <- function(x) {
+  ggplot(melt_gene_exp[melt_gene_exp$Gene == x, ], aes(x=Age, y=value, colour=Origin)) + 
+    geom_boxplot()+ 
+    theme_classic()+
+    labs(title=x) +
+    ylab("Normalized Gene Expression (CPM)") +
+    theme(plot.title = element_text(hjust = 0.5))
+}
+
+# Choose the gene to be ploted as named in the annotation (e.g.: lnpk)
+boxplots_gene_expression_Age("lnpk")
+
+############################################################################################ Q*
+
+
+##### R* GO term analysis
+
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("clusterProfiler")
+BiocManager::install("AnnotationDbi")
+BiocManager::install("org.Dr.eg.db")
+
+library(clusterProfiler)
+library(org.Dr.eg.db)
+library(AnnotationDbi)
+
+rm(list=ls())
+setwd('/my/folder/path')
+DS_genes <- read.csv("GenesDS.csv", row.names = 1) #Table containing the genes and their expression difference
+#DS_genes <- readRDS('genes_PC1.rds') #This was done for checking the drivers of PC1
+
+GaToDr <- read.csv("ENSAMBL_IDs_Gac_to_Dre.csv") #G. acleatus ENSEMBL.ID to D. reio ENSEMBL.ID
+NCBItoENSEMBL <- read.csv("NCBI_SymbolToENSEMBLid.csv") #G. aculeatus Symbols of differentially expressed genes to ENSEMBL.ID (contains excess genes for some reason)
+
+head(DS_genes)
+tail(DS_genes)
+
+universe_genes <- rownames(DS_genes) #All genes expressed in tissue
+length(universe_genes)
+genes_to_test <- rownames(DS_genes[abs(DS_genes$log2FoldChange) > 1,]) #Genes that are diferentially expressed
+#cat(paste(genes_to_test, collapse = ", ")) #This shows the list of differentially expressed genes separated with comas
+length(genes_to_test)
+
+
+#Here we try to convert NCBI Symbol to ENSEMBL.ID for diferentially expressed genes
+genes_list1 <-NCBItoENSEMBL$Symbol
+length(genes_list1)
+genes_list2 <-genes_to_test
+
+matching_genes <- intersect(genes_list1, genes_list2) #Genes in both lists
+non_matching_genes <- setdiff(union(genes_list1, genes_list2), matching_genes) #Excess genes from NCBI
+
+# Results
+cat("Number of matching genes:", length(matching_genes), "\n")
+cat("Number of non-matching genes:", length(non_matching_genes), "\n")
+
+#Check that algorythm worked
+#print(non_matching_genes)
+#geneTEST<-"spire1b"
+#geneTEST %in% genes_list2
+
+filtered_NCBItoENSEMBL <- NCBItoENSEMBL[NCBItoENSEMBL$Symbol %in% matching_genes, ]
+head(filtered_NCBItoENSEMBL)
+length(filtered_NCBItoENSEMBL$Ensembl.GeneIDs)
+
+length(GaToDr$Gene.stable.ID)
+
+filtered_GaToDr <- GaToDr[GaToDr$Gene.stable.ID %in% filtered_NCBItoENSEMBL$Ensembl.GeneIDs, ]
+head(filtered_GaToDr)
+length(filtered_GaToDr$Zebrafish.gene.stable.ID)
+
+#Keep 1 to 1 orthologs
+filtered_GaToDr_conservative <- filtered_GaToDr[filtered_GaToDr$Zebrafish.homology.type=='ortholog_one2one',]
+genes_to_test <- filtered_GaToDr_conservative$Zebrafish.gene.stable.ID
+filtered_GaToDr_veryconservative <- filtered_GaToDr[filtered_GaToDr$Zebrafish.homology.type=='ortholog_one2one' & filtered_GaToDr$Zebrafish.orthology.confidence..0.low..1.high.==1,]
+genes_to_test <- unique(filtered_GaToDr_veryconservative$Zebrafish.gene.stable.ID)
+
+#Here we try to convert NCBI Symbol to ENSEMBL.ID for all genes expressed in tissue
+
+genes_list3 <-NCBItoENSEMBL$Symbol
+length(genes_list3)
+genes_list4 <-universe_genes
+
+matching_genes_universe <- intersect(genes_list3, genes_list4) #Genes in both lists
+non_matching_genes_universe <- setdiff(union(genes_list1, genes_list2), matching_genes) #Excess genes from NCBI
+
+# Results
+cat("Number of matching genes:", length(matching_genes_universe), "\n")
+cat("Number of non-matching genes:", length(non_matching_genes_universe), "\n")
+
+
+#Check that algorythm worked
+#print(matching_genes_universe)
+#print(non_matching_genes_universe)
+#geneTEST<-"spire1b"
+#geneTEST %in% genes_list2
+
+filtered_NCBItoENSEMBL_universe <- NCBItoENSEMBL[NCBItoENSEMBL$Symbol %in% matching_genes_universe, ]
+head(filtered_NCBItoENSEMBL_universe)
+length(filtered_NCBItoENSEMBL_universe$Ensembl.GeneIDs)
+
+length(GaToDr$Gene.stable.ID)
+
+filtered_GaToDr_universe <- GaToDr[GaToDr$Gene.stable.ID %in% filtered_NCBItoENSEMBL_universe$Ensembl.GeneIDs, ]
+head(filtered_GaToDr_universe)
+length(filtered_GaToDr_universe$Zebrafish.gene.stable.ID)
+
+#Keep 1 to 1 orthologs
+filtered_GaToDr_universe_conservative <- filtered_GaToDr_universe[filtered_GaToDr_universe$Zebrafish.homology.type=='ortholog_one2one',]
+universe_genes_conservative <- filtered_GaToDr_universe_conservative$Zebrafish.gene.stable.ID
+filtered_GaToDr_universe_veryconservative <- filtered_GaToDr_universe[filtered_GaToDr_universe$Zebrafish.homology.type=='ortholog_one2one' & filtered_GaToDr_universe$Zebrafish.orthology.confidence..0.low..1.high.==1,]
+universe_genes_veryconservative <- unique(filtered_GaToDr_universe_veryconservative$Zebrafish.gene.stable.ID)
+
+#Run GO-Term analysis
+GO_results <- enrichGO(gene = genes_to_test, OrgDb = "org.Dr.eg.db", universe = universe_genes_veryconservative, keyType = "ENSEMBL", ont = "BP")
+
+results<-as.data.frame(GO_results)
+
+plot(barplot(GO_results, showCategory = 15))
+
+############################################################################################ R*
+
+
+##### S* - Analysis of dorsal spine location in the F2 cross
+# DB just phenotyped the first 36 individuals of each phenotype class (1 or 2 major dorsal spines) according to their order in the Xray scans of Carlos
+# the panel names and column and row of individuals on these panels are given in Institution\\carlos\\research\\DSposition_DB\\DSposition.xlsx, along with the position of the dorsal spine(s)
+# spine position is perpendicular to the vertebrae and dividing each vertebra in an anterior "a"-subscript and posterior "p" part, each counted as half when converting the scores into a semiquantitative metric for analysis
+# 21aug2025_DB
+
+rm(list=ls())
+setwd("C:\\Users\\bernerd\\switchdrive\\Institution\\carlos\\research\\DSpheno_DB") # office
+#setwd('C:\\Users\\daniel\\switchdrive\\Institution\\carlos\\research\\DSpheno_DB') # laptop
+d<-read.table("d_dsPos.txt", h=T)
+
+# 1-spined
+s<-d[which(d$Nspines==1),]
+nrow(s) # n=49
+#hist(s$ds1+0.001, xlim=c(0,10), ylim=c(0, 20), breaks=c(0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10), freq=T, main=NA, ann=F, las=1) #$counts
+pdf('1DS.pdf')
+hist(s$ds1+0.001, xlim=c(3,10), ylim=c(0, 30), breaks=c(3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10), freq=T, main=NA, ann=F, las=1) #$counts
+dev.off()
+
+# 2-spined
+s<-d[which(d$Nspine==2),]
+nrow(s) # n=53
+#hist(c(s$ds1+0.001, s$ds2+0.001), xlim=c(0,10), ylim=c(0, 20), breaks=c(0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10), freq=T, main=NA, ann=F, las=1) #$counts
+pdf('2DS.pdf')
+hist(c(s$ds1+0.001, s$ds2+0.001), xlim=c(3,10), ylim=c(0, 30), breaks=c(3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10), freq=T, main=NA, ann=F, las=1) #$counts
+dev.off()
+
+# bootstrap CI for the difference in the position of DS1 between the two phenotypic groups
+one<-d[which(d$Nspine==1), 'ds1']
+two<-d[which(d$Nspine==2), 'ds1']
+mean(one)-mean(two) # 0.87; observed posterior shift of 1-spined relative to 2-spined
+iter<-10000
+difs<-NULL
+for(i in 1:iter){
+	difs<-c(difs, mean(sample(one, replace=T))-mean(sample(two, replace=T)))
+}
+difsDS1<-difs
+quantile(difs, prob=c(0.025, 0.975)) # the upper and lower bootstrap CI margins
+# result: lower 0.654, upper 1.105 CI limit for the difference in pos (will differ slightly for every replicate analysis); point estimate; 0.874
+
+# bootstrap CI for the difference in the position of DS3 between the two phenotypic groups
+one<-d[which(d$Nspine==1), 'ds3']
+two<-d[which(d$Nspine==2), 'ds3']
+mean(one)-mean(two) # -0.027; observed posterior shift of 1-spined relative to 2-spined
+iter<-10000
+difs<-NULL
+for(i in 1:iter){
+	difs<-c(difs, mean(sample(one, replace=T))-mean(sample(two, replace=T)))
+}
+difsDS3<-difs
+quantile(difs, prob=c(0.025, 0.975)) # the upper and lower bootstrap CI margins
+# result: lower -0.188, upper 0.136 CI limit for the difference in pos; point estimate; -0.027
+
+# check if DS3 position varies within the 1-spined individuals, depending on whether they have DS1 relatively anteriorily or posteriorily
+oneAnt<-d[which((d$Nspine==1) & (d$ds1<=5)), 'ds3']
+onePost<-d[which((d$Nspine==1) & (d$ds1>=6)), 'ds3']
+mean(oneAnt)-mean(onePost) # 0.136; observed posterior shift of 1-spined anterior relative to 1-spined posterior
+iter<-10000
+difs<-NULL
+for(i in 1:iter){
+	difs<-c(difs, mean(sample(oneAnt, replace=T))-mean(sample(onePost, replace=T)))
+}
+quantile(difs, prob=c(0.025, 0.975)) # the upper and lower bootstrap CI margins
+# result: lower -0.159, upper 0.428 CI limit for the difference in pos; point estimate; 0.136. no indication of a substantial group difference
+
+# bootstrap CI for the difference in total vertebral number between the two phenotypic groups
+one<-d[which(d$Nspine==1), 'Nvert']
+two<-d[which(d$Nspine==2), 'Nvert']
+mean(one)-mean(two) # -0.077; observed difference in total vertebral count
+iter<-10000
+difs<-NULL
+for(i in 1:iter){
+	difs<-c(difs, mean(sample(one, replace=T))-mean(sample(two, replace=T)))
+}
+difsNvert<-difs
+quantile(difs, prob=c(0.025, 0.975)) # the upper and lower bootstrap CI margins
+# result: lower -0.350, upper 0.192 CI limit for the difference in Nvert; point estimate; -0.077
+
+# plot the three point estimates and 95% CIs (DS1, DS3, Nvert)
+plot(0,0, xlim=c(-0.38, 1.135), ylim=c(0, 2), type='n')
+segments(0, 0, 0, 2, col='gray')
+points(-0.077, 0.5, pch=16, cex=1.2) # Nvert
+segments(-0.350, 0.5, 0.192, 0.5, lwd=2)
+points(-0.027, 1, pch=16, cex=1.2) # DS3
+segments(-0.188, 1, 0.136, 1, lwd=2)
+points(0.874, 1.5, pch=16, cex=1.2) # DS1
+segments(0.654, 1.5, 1.105, 1.5, lwd=2)
+
+# violin plot; this is raw plotting, was saved as pdf and then finalized for publication in a vector image program
+library(ggplot2)
+
+data <- data.frame(
+  name=c(rep("DS1", iter), rep("DS3", iter), rep("Nvert", iter)),
+  value=c(difsDS1, difsDS3, difsNvert)
+)
+p <- ggplot(data, aes(x=name, y=value, fill=name)) + # fill=name allow to automatically dedicate a color for each group
+  geom_violin() + 
+  geom_segment(aes(x = 0.5, y = 0.654, xend = 0.5, yend = 1.105)) + 
+  geom_segment(aes(x = 1, y = -0.188, xend = 1, yend = 0.136)) + 
+  geom_segment(aes(x = 1.5, y = -0.350, xend = 1.5, yend = 0.192)) +
+  geom_point(aes(x = 0.5, y = 0.874), color = "black") +
+  geom_point(aes(x = 1, y = -0.027), color = "black") +
+  geom_point(aes(x = 1.5, y = -0.077), color = "black")
+plot(p)
+###################################################### end S*
+
+
+##### T* - Simulation combined with Approximate Bayesian Comutation (ABC) to estimate the frequency of the dominant derived allele in SCAD
+# The final simulator version takes into account that there are only 5 F1 families, with following sample sizes: 13, 6, 11, 17, 13; these precise sample sizes are considered for the F1 cohort
+# This analysis requires no initial input file, but generates simulation output as input for the ABC runs
+# DB_5sept2025
+
+rm(list=ls())
+##setwd('C:\\Users\\daniel\\switchdrive\\Institution\\carlos\\research\\DSpheno_DB') ### output folder (laptop)
+#setwd("C:\\Users\\bernerd\\switchdrive\\Institution\\carlos\\research\\DSpheno_DB") # office
+simdat<-NULL
+
+for(j in 1:10000){ # replicate simulations for parameter optimization
+	p <- runif(1, min = 0, max = 1) ### pop allele "A" freq in SCAD (derived, dominant). "a" is the ancestral recessive allele assumed to be fixed in the marines
+	#p<-0.77 # for manual exploration
+	nfo <- 20 ### n F0 founders per population, like empirical (roughly)
+	nfam<-5 ### the number of F1 families derived from the parents
+	fas <- c(6, 11, 13, 13, 17) # number of F1 individuals for the nfam (=5) F1 hybrid families
+	nf1 <- 60 ### n F1 individuals in total, like empirical
+	nf2 <-530 ### ; n F2 individuals, like empirical (pedigree not controlled)
+	
+	# Define parental genotypes
+	p1 <- rep("aa", nfo) # marine
+	# SCAD scenario 1: this generates the parental cohort precisely according to Hardy-Weinberg, accepting aa genotypes in SCAD in the founder generation:
+	#p2 <- c(rep("AA", round(nfo*p^2)), rep("Aa", round(nfo*2*p*(1-p))), rep("aa", round(nfo*(1-p)^2))) # SCAD
+	# SCAD scenario 2: this generates a parental pool according to Hardy-Weinberg, accepting aa genotypes in SCAD in the founder generation, but the actual parents sampled are a stochastic draw from this pool:
+	p2 <- c(rep("AA", round(nfo*p^2)), rep("Aa", round(nfo*2*p*(1-p))), rep("aa", round(nfo*(1-p)^2))) # SCAD
+	p2 <- sample(p2, size=nfo, replace=T)
+	# SCAD scenario 3: alternatively, take into consideration that we excluded any possible aa genotype (i.e, 2DS phenotypes) for the generation of the parental cohort (i.e., selective field sampling). Hence, this modifies the relative proportion of AA and Aa:
+	# this scheme introduces weird bias though, increasingly so as p decreases. aa is konwn to be rare in SCAD, hence run the simulations with H-W (scenario 2 to account for stochasticity)
+	#p2 <- c(rep("AA", round(5*nfo*p^2)), rep("Aa", round(5*nfo*2*p*(1-p))), rep("aa", round(5*nfo*(1-p)^2))) # SCAD
+	#p2 <- sample(p2[which(p2!='aa')], size=nfo, replace=F)
+		
+	# Simulate nfam multiparent F1 crosses with offspring numbers given by fas
+	f1 <- NULL
+	for (i in 1:nfam) {
+		parent1 <- sample(p1, 1)
+		parent2 <- sample(p2, 1)
+		# Determine gametes
+		gam1 <- c("a", "a")
+		if (parent2 == "aa"){gam2 <- c("a", "a")}
+		if (parent2 == "Aa"){gam2 <- c("A", "a")}
+		if (parent2 == "AA"){gam2 <- c("A", "A")}
+		for(k in 1:fas[i]){
+			# Form F1 offspring
+			g1 <- sample(gam1, 1)
+			g2 <- sample(gam2, 1)
+			f1 <- c(f1, paste0(sort(c(g1, g2), decreasing=T), collapse = ""))
+		}
+	}
+
+	# Simulate F2 generation by F1 intercrossing
+	f1pa <- matrix(sample(f1, 2 * nf2, replace=T), ncol = 2, byrow = TRUE)
+	f2 <- character(nf2)
+
+	for (i in 1:nf2) {
+		parent1 <- f1pa[i, 1]
+		parent2 <- f1pa[i, 2]
+  
+		# Determine gametes
+		gam1 <- if (parent1 == "aa") c("a", "a") else c("A", "a")
+		gam2 <- if (parent2 == "aa") c("a", "a") else c("A", "a")
+  
+		# Form F2 offspring
+		g1 <- sample(gam1, 1)
+		g2 <- sample(gam2, 1)
+		f2[i] <- paste0(sort(c(g1, g2), decreasing=T), collapse = "")
+	}
+		
+	# save the simulation stats - freq of A allele in SCAD, prop of 2-DS phenotype (ancestral) in F1 and in F2 cohort:
+	output<-c(round(p,3), round(length(which(f1=="aa"))/nf1, 3), round(length(which(f2=="aa"))/nf2, 3))
+	#c(round(p,3), round((1-p)^2,3), round(length(which(f1=="aa"))/nf1, 3), round(length(which(f2=="aa"))/nf2, 3)) # print: AF derived allele in SCAD; prop 2DS in SCAD; props 2DS in F1 and F2
+	simdat<-rbind(simdat, output)
+}
+simdat<-rbind(c('AF.SCAD', 'F1.2DS', 'F2.2DS'), simdat)
+write.table(simdat, 'DSsimusForABC_n10000_HWstoch_nfam.txt', quote=F, row.names=F, col.names=F) # SCAD scenario 2, with number of F1 families controlled, 10,000 simulations
+
+# run ABC estimation
+# the SCAD allele frequency concerns the dominant derived allele
+rm(list=ls())
+setwd("C:\\Users\\bernerd\\switchdrive\\Institution\\carlos\\research\\DSpheno_DB") ### office
+#setwd('C:\\Users\\daniel\\switchdrive\\Institution\\carlos\\research\\DSpheno_DB') ### input folder, laptop
+library(abc)
+d<-read.table('DSsimusForABC_n10000_HWstoch_nfam.txt', h=T) # SCAD scenario 2, with number of F1 families controlled, 10,000 simulations
+
+obs<-c(0.5, 0.68) # proportion of 2DS (ancestral) dorsal spine phenotype in F1 and F2 cohort
+pars<-data.frame(d[,1]) # parameter (AF) used for simulations
+names(pars)<-'AF.SCAD'
+props<-d[,2:3]
+estim<-NULL
+for(i in 1:500){
+	eval<-abc(target=obs, param=pars, sumstat=props, tol=0.01, method='neuralnet') ### Chat recommends 0.02-0.05 with 5000 simulations
+	a<-round(summary(eval), 2)
+	iestim<-c(a[3,1], a[4,1])  # get median and mean estimate
+	estim<-rbind(estim, iestim)
+}
+estim<-data.frame(estim)
+names(estim)<-c('medianEst', 'meanEst')
+hist(estim$medianEst, breaks=100, xlim=c(0,1))
+median(estim$medianEst)
+#write.table(estim, 'ABCestim_stoch_nfam_tol0.01.txt', quote=F, row.names=F)
+#write.table(estim, 'ABCestim_stoch_nfam_tol0.02.txt', quote=F, row.names=F)
+#write.table(estim, 'ABCestim_stoch_nfam_tol0.05.txt', quote=F, row.names=F)
+#write.table(estim, 'ABCestim_stoch_nfam_tol0.10.txt', quote=F, row.names=F)
+# I checked stability as a function of tol by hand for 0.01, 0.02, 0.05, 0.1. All grand medians are in the range 0.54 (tol 0.01) - 0.61 (tol 0.02 and 0.10) - 0.63 (tol 0.05).
+# since 0.05 is recommended as good starting point given that number of simulations (0.1 would be recommended too, almost same result), I take this as best guess (grand median: 0.63). but the 500 replicate estimation runs are saved for all 4 tol choices
+# Based on the phenotype proportions estimated for SCAD from field samples alone (5-10% of 2DS), the HW-proportion for the A allele would be around 0.67-0.78
+
+# explore the distributions of medians across the replicate ABC estimation runs
+#d<-read.table('ABCestim_stoch_nfam_tol0.01.txt', h=T) ### choose tol
+#d<-read.table('ABCestim_stoch_nfam_tol0.02.txt', h=T) ### choose tol
+#d<-read.table('ABCestim_stoch_nfam_tol0.05.txt', h=T) ### choose tol
+#d<-read.table('ABCestim_stoch_nfam_tol0.10.txt', h=T) ### choose tol
+hist(d$medianEst, breaks=100, xlim=c(0, 1))
+median(d$medianEst)
+
+# explore the simulations:
+#d<-read.table('DSsimusForABC_n10000_HWstoch_nfam.txt', h=T)
+#dd<-d[which(d$AF.SCAD>=0.61 & d$AF.SCAD<=0.63), ]
+#hist(dd$F1.2DS)
+#median(dd$F1.2DS)
+#median(dd$F2.2DS)
+#
+############################################################## END T*
+
+
+##### U* - analysis of first and third dorsal spine length in F2 hybrid cross individuals with 1 vs 2 dorsal spines
+# spine length is adjusted for overall body size by using cube root mass (blot dried EtOH specimens) as size metric (not perfect since a few females showed signs of gravity, but good enough)
+# for slightly more robust size adjustement using PC1 size see code chunk included below
+# spine measurements from CMEX images at minimal stereomicroscope magnification
+# 
+#13nov2025_DB
+
+# this is the initial implementation using just linearized body mass as body size metric (see alternative implementation with SL below, used for publication):
+
+rm(list=ls())
+#setwd("C:\\Users\\bernerd\\switchdrive\\Institution\\carlos\\research\\DSpheno_DB") # office
+setwd('C:\\Users\\daniel\\switchdrive\\Institution\\carlos\\research\\DSpheno_DB') # laptop
+d<-read.table("d_dsLength_justMass.txt", h=T) # this is the data set with just body mass (g) as size standard
+d$phenotype<-as.character(d$phenotype)
+s<-d$weight_g^(1/3) # the size standard (cube root of mass)
+d<-cbind(d, s)
+
+# analysis for DS1:
+d1<-na.omit(d[,c('phenotype', 's', 'DS1_mm')]) # delete NA rows
+plot(d1[d1$phenotype=='2', 's'], d1[d1$phenotype=='2', 'DS1_mm'], xlim=c(min(na.omit(d$s)), max(na.omit(d$s))), ylim=c(min(na.omit(d$DS1_mm)), max(na.omit(d$DS1_mm))), pch=19, col='blue') # reduced
+points(d1[d1$phenotype=='3', 's'], d1[d1$phenotype=='3', 'DS1_mm'], pch=19, col='red') # complete
+
+# standardize the DS1 data (grand mean-centering and SD-scaling):
+d1$DS1_mm <- (d1$DS1_mm-mean(d1$DS1_mm))/sd(d1$DS1_mm)
+
+m<-lm(DS1_mm ~ s * phenotype, data=d1)
+summary(m) # no indication of a relevant interaction
+m<-lm(DS1_mm ~ s + phenotype, data=d1) # interaction off
+summary(m) # no relevant difference between phenotypes indicated for DS1
+summary(m)$coef[3,1] # -0.295; point estimate - 3DS has shorter spines than 2DS
+#estimation of DS1 phenotype difference compatibility:
+iter<-10000
+red<-length(which(d1$phenotype=='2'))
+compl<-length(which(d1$phenotype=='3'))
+distr<-NULL
+for(i in 1:iter){
+	bsd<-d1[c(sample(which(d1$phenotype=='2'), size=red, replace=T), sample(which(d1$phenotype=='3'), size=compl, replace=T)),]
+	bsm<-lm(DS1_mm ~ s+phenotype, data=bsd)
+	distr<-c(distr, summary(bsm)$coef[3,1])
+}
+quantile(distr, probs=c(0.025, 0.975)) # -0.685, 0.106; quantile 95% CI from BS-distribution, 10k bootstrap reps
+median(distr) # -0.291; BS median, 10k bootstrap reps
+ds1Distr<-distr
+
+# analysis for DS3:
+d3<-na.omit(d[,c('phenotype', 's', 'DS3_mm')]) # delete NA rows
+plot(d3[d3$phenotype=='2', 's'], d3[d3$phenotype=='2', 'DS3_mm'], xlim=c(min(na.omit(d$s)), max(na.omit(d$s))), ylim=c(min(na.omit(d$DS3_mm)), max(na.omit(d$DS3_mm))), pch=19, col='blue') # reduced
+points(d3[d3$phenotype=='3', 's'], d3[d3$phenotype=='3', 'DS3_mm'], pch=19, col='red') # complete
+
+# standardize the DS3 data (grand mean-centering and SD-scaling):
+d3$DS3_mm <- (d3$DS3_mm-mean(d3$DS3_mm))/sd(d3$DS3_mm)
+
+m<-lm(DS3_mm ~ s*phenotype, data=d3)
+summary(m) # no indication of a relevant interaction
+m<-lm(DS3_mm ~ s+phenotype, data=d3) # interaction off
+summary(m) # no relevant difference between phenotypes indicated for DS1
+summary(m)$coef[3,1] # 0.206, point estimate: 3DS has slightly longer spines than 2DS
+#estimation of DS1 phenotype difference compatibility:
+iter<-10000
+red<-length(which(d1$phenotype=='2'))
+compl<-length(which(d1$phenotype=='3'))
+distr<-NULL
+for(i in 1:iter){
+	bsd<-d3[c(sample(which(d3$phenotype=='2'), size=red, replace=T), sample(which(d3$phenotype=='3'), size=compl, replace=T)),]
+	bsm<-lm(DS3_mm ~ s+phenotype, data=bsd)
+	distr<-c(distr, summary(bsm)$coef[3,1])
+}
+quantile(distr, probs=c(0.025, 0.975)) # -0.195, 0.592; quantile 95% CI from BS-distribution, 10k bootstrap reps
+median(distr) # 0.206; BS median, 10k bootstrap reps
+ds3Distr<-distr
+
+# violin plot
+library(ggplot2)
+
+data <- data.frame(
+  name=c(rep("ds1L", iter), rep("ds3L", iter)),
+  value=c(ds1Distr, ds3Distr)
+)
+p <- ggplot(data, aes(x=name, y=value, fill=name)) + # fill=name allow to automatically dedicate a color for each group
+  geom_violin() + 
+  geom_segment(aes(x = 1, y = -0.685, xend = 1, yend = 0.106)) + 
+  geom_segment(aes(x = 2, y = -0.195, xend = 2, yend = 0.592)) + 
+  geom_point(aes(x = 1, y = -0.295), color = "black") +
+  geom_point(aes(x = 2, y = 0.206), color = "black")
+plot(p)
+
+
+### this is the same as the above analysis, but with size expressed as PC1 scores from mass and standard length (should be slightly improved size correction; used for publication)
+
+rm(list=ls())
+setwd("C:\\Users\\bernerd\\switchdrive\\Institution\\carlos\\research\\DSpheno_DB") # office
+#setwd('C:\\Users\\daniel\\switchdrive\\Institution\\carlos\\research\\DSpheno_DB') # laptop
+d<-read.table("d_dsLength.txt", h=T) # this is the full data set with body mass plus SL as size standard
+#d<-read.table("d_dsLength_check.txt", h=T) # same, but 3 individuals (all reduced) with not fully resolved SL (because label detached) excluded - this does not make any relevant difference, hence go for the full data set
+d$phenotype<-as.character(d$phenotype)
+
+# get the PC1 size standard
+#s<-d$weight_g^(1/3) # one of the two size standards (cube root of mass)
+p<-prcomp(cbind(d$weight_g^(1/3), d$SL_mm), scale=T) # PCA on the correlation matrix (scale=T)
+variances<-p$sdev^2
+pve<-variances / sum(variances) # proportion variance explained; 92%
+d<-cbind(d, (p$x[,1])*-1)
+idx<-which(names(d)=='(p$x[, 1]) * -1')
+names(d)[idx]<-'pc1'
+#plot(d$weight_g, d$SL_mm)
+
+# analysis for DS1:
+d1<-na.omit(d[,c('phenotype', 'pc1', 'DS1_mm')]) # delete NA rows
+plot(d1[d1$phenotype=='2', 'pc1'], d1[d1$phenotype=='2', 'DS1_mm'], xlim=c(min(na.omit(d$pc1)), max(na.omit(d$pc1))), ylim=c(min(na.omit(d$DS1_mm)), max(na.omit(d$DS1_mm))), pch=19, col='blue') # reduced
+points(d1[d1$phenotype=='3', 'pc1'], d1[d1$phenotype=='3', 'DS1_mm'], pch=19, col='red') # complete
+table(d1$phenotype)
+
+# standardize the DS1 data (grand mean-centering and SD-scaling):
+d1$DS1_mm <- (d1$DS1_mm-mean(d1$DS1_mm))/sd(d1$DS1_mm)
+
+m<-lm(DS1_mm ~ pc1 * phenotype, data=d1)
+summary(m) # no indication of a relevant interaction
+m<-lm(DS1_mm ~ pc1 + phenotype, data=d1) # interaction off
+summary(m) # no relevant difference between phenotypes indicated for DS1
+m1<-summary(m)$coef[3,1] # -0.319; point estimate - 3DS has shorter spines than 2DS
+#estimation of DS1 phenotype difference compatibility:
+iter<-10000
+red<-length(which(d1$phenotype=='2'))
+compl<-length(which(d1$phenotype=='3'))
+distr<-NULL
+for(i in 1:iter){
+	bsd<-d1[c(sample(which(d1$phenotype=='2'), size=red, replace=T), sample(which(d1$phenotype=='3'), size=compl, replace=T)),]
+	bsm<-lm(DS1_mm ~ pc1 + phenotype, data=bsd)
+	distr<-c(distr, summary(bsm)$coef[3,1])
+}
+q1<-quantile(distr, probs=c(0.025, 0.975)) # -0.716, 0.087; quantile 95% CI from BS-distribution, 10k bootstrap reps
+m1<-median(distr) # -0.312; BS median, 10k bootstrap reps
+ds1Distr<-distr
+
+
+# analysis for DS3:
+d3<-na.omit(d[,c('phenotype', 'pc1', 'DS3_mm')]) # delete NA rows
+plot(d3[d3$phenotype=='2', 'pc1'], d3[d3$phenotype=='2', 'DS3_mm'], xlim=c(min(na.omit(d$pc1)), max(na.omit(d$pc1))), ylim=c(min(na.omit(d$DS3_mm)), max(na.omit(d$DS3_mm))), pch=19, col='blue') # reduced
+points(d3[d3$phenotype=='3', 'pc1'], d3[d3$phenotype=='3', 'DS3_mm'], pch=19, col='red') # complete
+table(d3$phenotype)
+
+# standardize the DS3 data (grand mean-centering and SD-scaling):
+d3$DS3_mm <- (d3$DS3_mm-mean(d3$DS3_mm))/sd(d3$DS3_mm)
+
+m<-lm(DS3_mm ~ pc1 * phenotype, data=d3)
+summary(m) # no indication of a relevant interaction
+m<-lm(DS3_mm ~ pc1 + phenotype, data=d3) # interaction off
+summary(m) # no relevant difference between phenotypes indicated for DS1
+m3<-summary(m)$coef[3,1] # 0.211, point estimate: 3DS has slightly longer spines than 2DS
+#estimation of DS1 phenotype difference compatibility:
+iter<-10000
+red<-length(which(d1$phenotype=='2'))
+compl<-length(which(d1$phenotype=='3'))
+distr<-NULL
+for(i in 1:iter){
+	bsd<-d3[c(sample(which(d3$phenotype=='2'), size=red, replace=T), sample(which(d3$phenotype=='3'), size=compl, replace=T)),]
+	bsm<-lm(DS3_mm ~ pc1 + phenotype, data=bsd)
+	distr<-c(distr, summary(bsm)$coef[3,1])
+}
+q3<-quantile(distr, probs=c(0.025, 0.975)) # -0.202, 0.605; quantile 95% CI from BS-distribution, 10k bootstrap reps
+median(distr) # 0.215; BS median, 10k bootstrap reps
+ds3Distr<-distr
+
+# violin plot
+library(ggplot2)
+
+data <- data.frame(
+  name=c(rep("ds1L", iter), rep("ds3L", iter)),
+  value=c(ds1Distr, ds3Distr)
+)
+p <- ggplot(data, aes(x=name, y=value, fill=name)) + # fill=name allow to automatically dedicate a color for each group
+  geom_violin() + 
+  geom_segment(aes(x = 1, y = q1[1], xend = 1, yend = q1[2])) + 
+  geom_segment(aes(x = 2, y = q3[1], xend = 2, yend = q3[2])) + 
+  geom_point(aes(x = 1, y = m1), color = "black") +
+  geom_point(aes(x = 2, y = m3), color = "black")
+plot(p)
+
+################################################################### END U
+
+
+##### V* Plotting of developmental sequence
+
+library(tidyverse)
+library(patchwork)
+
+# Read and clean data
+data <- read.csv("/my/folder.path/DS_Developmental_graph_data.csv")
+names(data) <- str_replace_all(names(data), " ", "_")
+names(data) <- str_trim(names(data))
+
+# Legend levels with spaces (for display)
+legend_levels <- c("Nothing", "Cartilage only", "Dorsal plate ossification", "Dorsal spine")
+
+# Function to prepare bar chart data (mutually exclusive categories only)
+prepare_bar_data <- function(df, prefix) {
+  df %>%
+    select(Age, all_of(c(
+      paste0(prefix, "_Nothing"),
+      paste0(prefix, "_Cartilage_only"),
+      paste0(prefix, "_Dorsal_plate_ossification") 
+    ))) %>%
+    pivot_longer(cols = -Age, names_to = "Category", values_to = "Count") %>%
+    mutate(
+      Category = str_remove(Category, paste0(prefix, "_")),
+      Category = str_replace_all(Category, "_", " "),
+      Category = factor(Category, levels = legend_levels)
+    ) %>%
+    group_by(Age) %>%
+    mutate(Proportion = Count / sum(Count)) %>%
+    ungroup()
+}
+
+# Function to prepare independent pelvic spine data (excluding it from total)
+prepare_spine_data <- function(df, prefix) {
+  spine_col <- paste0(prefix, "_Dorsal_spine")
+  total_cols <- df %>%
+    select(starts_with(prefix)) %>%
+    select(-all_of(spine_col)) %>%
+    names()
+  
+  df %>%
+    select(Age, spine = all_of(spine_col)) %>%
+    left_join(
+      df %>%
+        transmute(Age, Total = rowSums(select(., all_of(total_cols)))),
+      by = "Age"
+    ) %>%
+    distinct() %>%
+    mutate(Proportion = spine / Total)
+}
+
+# Prepare data
+duin_bar <- prepare_bar_data(data, "DUIN")
+scad_bar <- prepare_bar_data(data, "SCAD")
+
+duin_spine <- prepare_spine_data(data, "DUIN")
+scad_spine <- prepare_spine_data(data, "SCAD")
+
+# Color palette using labels with spaces
+custom_palette <- c(
+  "Nothing" = "lightgray",
+  "Cartilage only" = "#1E88E5",
+  "Dorsal plate ossification" = "#D81B60",
+  "Dorsal spine" = "#004D40"
+)
+
+# Dummy point for custom legend (invisible in plot, visible in legend)
+dummy_legend <- data.frame(
+  Age = 0,
+  Proportion = 0,
+  Category = factor("Dorsal spine", levels = legend_levels)
+)
+
+# Marine plot
+duin_plot <- ggplot() +
+  geom_bar(data = duin_bar, aes(x = as.factor(Age), y = Proportion, fill = Category),
+           stat = "identity", color = "white", width = 0.8) +
+  geom_line(data = duin_spine, aes(x = as.factor(Age), y = Proportion, group = 1),
+            color = "#004D40", size = 1.2) +
+  geom_point(data = duin_spine, aes(x = as.factor(Age), y = Proportion),
+             color = "#004D40", size = 2) +
+  geom_point(data = dummy_legend, aes(x = Age, y = Proportion, fill = Category),
+             color = "#004D40", shape = 21, size = 0, alpha = 0, show.legend = TRUE, inherit.aes = FALSE) +
+  scale_fill_manual(values = custom_palette, drop = FALSE) +
+  labs(title = "Spined G. aculeatus - Pelvic Developmental Stages", y = "Proportion", x = "Age (days post hatching)") +
+  theme_light(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "top",
+    legend.title = element_blank(),
+    plot.title = element_text(face = "bold", size = 15)
+  )
+
+# SCAD plot (no legend repeated)
+scad_plot <- ggplot() +
+  geom_bar(data = scad_bar, aes(x = as.factor(Age), y = Proportion, fill = Category),
+           stat = "identity", color = "white", width = 0.8) +
+  geom_line(data = scad_spine, aes(x = as.factor(Age), y = Proportion, group = 1),
+            color = "#004D40", size = 1.2) +
+  geom_point(data = scad_spine, aes(x = as.factor(Age), y = Proportion),
+             color = "#004D40", size = 2) +
+  scale_fill_manual(values = custom_palette, drop = FALSE) +
+  labs(title = "Spineless G. aculeatus - Pelvic Developmental Stages", y = "Proportion", x = "Age (days post hatching)") +
+  theme_light(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 15)
+  )
+
+# Combine both plots
+final_plot <- duin_plot / scad_plot +
+  plot_annotation(
+    theme = theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5))
+  )
+
+# Show plot
+final_plot
+
+############################################################################################ V*
