@@ -193,7 +193,7 @@ Some scripts are intended to run on a SLURM cluster with `sbatch`. Others can be
 The current scripts are a cleaned first GitHub version. The next improvement would be to make every script read paths and parameters directly from `config/paths.yaml` and `config/params.yaml`.
 
 ## Citing this work
-
+```bibtex
 @article{herrera2025evolution,
   title={Evolution of threespine stickleback dorsal spines via hoxdb gene regulation},
   author={Herrera-Castillo, Carlos Manuel and Brechb{\"u}hl, Tanja and Fages, Antoine and Cameron MacColl, Andrew Donald and Dean, Laura L and Tschopp, Patrick and Berner, Daniel},
@@ -201,4 +201,4 @@ The current scripts are a cleaned first GitHub version. The next improvement wou
   pages={2025--08},
   year={2025},
   publisher={Cold Spring Harbor Laboratory}
-}
+}```
