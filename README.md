@@ -1,5 +1,7 @@
 # Project
 
+The repeated evolution of reduced skeletal armor in threespine stickleback provides a powerful model for understanding the genetic basis of morphological change. We investigated the genetic and developmental mechanisms underlying the loss of the second dorsal spine in a freshwater stickleback population from North Uist, Scotland. Crosses between spineless freshwater and fully spined marine individuals confirmed a genetic basis for the trait, with inheritance patterns inconsistent with simple Mendelian expectations. A bulk segregant analysis of F3 hybrids revealed a strong genomic signal on chromosome VI, overlapping the hoxdb cluster. Developmental staining and bulk RNA sequencing showed delayed and incomplete cartilage formation and altered gene expression during critical stages of dorsal development in spineless fish, notably of the hoxdb genes. Our findings indicate that while the loss of dorsal spines has evolved repeatedly, it may involve distinct genetic mechanisms across populations, with chromosome VI playing a central role in this case.
+
 This repository contains scripts for DNA sequencing, RNA-seq, annotation, and phenotypic analyses.
 
 The code was split from one larger analysis file into smaller scripts so the workflow is easier to follow, run step by step, and share on GitHub.
@@ -48,7 +50,7 @@ config/params.yaml
 
 ## Data
 
-Large data files should usually not be uploaded to GitHub. This includes:
+You can find the project files in the European Nucleotide Archive under [Project: PRJEB91223](https://www.ebi.ac.uk/ena/browser/view/PRJEB91223). Large data files should usually not be uploaded to GitHub. This includes:
 
 - FASTQ files
 - SAM/BAM files
@@ -189,3 +191,14 @@ R packages include:
 Some scripts are intended to run on a SLURM cluster with `sbatch`. Others can be run directly with `bash` or `Rscript`.
 
 The current scripts are a cleaned first GitHub version. The next improvement would be to make every script read paths and parameters directly from `config/paths.yaml` and `config/params.yaml`.
+
+## Citing this work
+
+@article{herrera2025evolution,
+  title={Evolution of threespine stickleback dorsal spines via hoxdb gene regulation},
+  author={Herrera-Castillo, Carlos Manuel and Brechb{\"u}hl, Tanja and Fages, Antoine and Cameron MacColl, Andrew Donald and Dean, Laura L and Tschopp, Patrick and Berner, Daniel},
+  journal={bioRxiv},
+  pages={2025--08},
+  year={2025},
+  publisher={Cold Spring Harbor Laboratory}
+}
