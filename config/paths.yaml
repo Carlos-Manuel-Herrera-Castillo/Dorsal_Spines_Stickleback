@@ -1,0 +1,89 @@
+# Paths used by the project.
+# These were collected from the original combined script.
+
+project:
+  root_dir: "/my/folder/path"
+  r_library: "/my/library/path/x86_64-pc-linux-gnu-library/4.4"
+  r_library_alt: "/library/path/R/x86_64-pc-linux-gnu-library/4.4"
+
+reference:
+  genome_fasta: "/my/folder/path/Gac_v5_pitx1_separateChrUn.fa"
+  novoalign_index: "/path/to/reference/genome/Gac_v5_pitx1_separateChrUn.ndx"
+  star_index_dir: "/my/folder/path"
+  annotation_gtf: "/my/folder/path/NCBI_Gac_v5_pitx1.gtf"
+  annotation_gff: "NCBI_Gac_v5_pitx1.gff"
+  chromosomes_file: "/my/folder/path/chrs.txt"
+
+dna:
+  fastq:
+    ds_high_r1: "my/folder/path/D_S_High.R1.fastq"
+    ds_high_r1_parts_prefix: "my/folder/path/D_S_High.R1_part_"
+    example_read1_part: "/path/to/read/1/D_S_High.R1_part_aa.fastq"
+    example_read2_part: "/path/to/read/2/D_S_High.R2_part_aa.fastq"
+  alignment:
+    example_sam: "/path/for/output/D_S_High_part_aa_novoal.sam"
+    example_bam: "D_S_High_part_aa_novoal.bam"
+    merged_bam: "D_S_High_Merged.bam"
+    bam_parts_glob: "/my/folder/path/D_S_High_part_a*_novoal.bam"
+  pileup:
+    working_dir: "/my/folder/path"
+    example_input_bam_name: "D_S_High_Merged"
+    example_output: "D_S_High_Merged.pileupAllChr.txt"
+    freqsum_parallel_input: "/my/folder/path/D_S_High_Merged.pileupAllChr.txt"
+    freqsum_fast_basic_input: "C:/Users/bernerd/switchdrive/Institution/carlos/research/GWAS_DB/Basicpool.pileup.chrVI.txt"
+    freqsum_fast_dpool_input: "C:/Users/bernerd/switchdrive/Institution/carlos/research/GWAS_DB/Dpool.pileup.chrVI.txt"
+  freqsum:
+    all_chromosomes_output: "/my/folder/path/merged_D_S_Low.FreqSumAllChr.txt"
+    split_by_chr_output_dir: "/my/folder/path/DS_Separate_Chr_Novoalign"
+    basic_chrVI_output: "C:/Users/daniel/switchdrive/Institution/carlos/research/GWAS_DB/Basicpool_freqSum_chrVI.txt"
+    dpool_chrVI_output: "C:/Users/daniel/switchdrive/Institution/carlos/research/GWAS_DB/Dpool_freqSum_chrVI.txt"
+    gwas_db_dir: "C:/Users/bernerd/switchdrive/Institution/carlos/research/GWAS_DB"
+  afd:
+    working_dir: "/my/folder/path"
+    fast_working_dir: "C:/Users/bernerd/switchdrive/Institution/carlos/research/GWAS_DB"
+    plot_input_dir: "/my/folder/path"
+    plot_input_file: "DS_AFD.txt"
+
+rnaseq:
+  working_dir: "/my/folder/path"
+  sample_ids_file: "Sample_ID.txt"
+  raw_fastq_list: "fastq_files.txt"
+  trimmed_fastq_list: "list_of_fastq.txt"
+  trimmomatic_jar: "/cluster/apps/Trimmomatic/0.39-Java-1.8/trimmomatic-0.39.jar"
+  trimmomatic_adapters: "/cluster/apps/Trimmomatic/0.39-Java-1.8/adapters/TruSeq3-PE.fa"
+  star_sample_output_base: "/scicore/home/bernerd/herrer0002/RNAseq/STAR"
+  star_output_prefix_base: "/my/folder/path"
+  htseq_commands_file: "commands.cmd"
+  gene_expression_matrix: "gene_expression_matrix.txt"
+  metadata: "Metadata_for_gene_expression.csv"
+  pca_script: "PCA_script.R"
+  annotation_chrVI_genes: "AnnotationChrVI_onlygenes.txt"
+  annotation_chrUn_genes: "AnnotationChrUnMappingToChrXIV_onlygenes.txt"
+  rnaseq_sam_output_dir: "RNASeq_sam_files_ChrUnSep"
+
+go_analysis:
+  working_dir: "my/folder/path"
+
+phenotypes:
+  dspheno_office_dir: "C:/Users/bernerd/switchdrive/Institution/carlos/research/DSpheno_DB"
+  dspheno_laptop_dir: "C:/Users/daniel/switchdrive/Institution/carlos/research/DSpheno_DB"
+  ds_position_input: "d_dsPos.txt"
+  ds_length_mass_input: "d_dsLength_justMass.txt"
+  ds_length_input: "d_dsLength.txt"
+  ds_length_check_input: "d_dsLength_check.txt"
+  abc_simulation_output: "DSsimusForABC_n10000_HWstoch_nfam.txt"
+  developmental_data: "/my/folder.path/DS_Developmental_graph_data.csv"
+
+logs:
+  freqsum_output: "/my/folder/path/FreqSum_D_S_Low_%A_%a.o"
+  freqsum_error: "/my/folder/path/FreqSum_D_S_Low_%A_%a.e"
+  afd_output: "/my/folder/path/AFD_table_DS.o"
+  afd_error: "/my/folder/path/AFD_table_DS.e"
+  trimmomatic_output: "/my/folder/path/Trimmomatic_output_%A_%a.o"
+  trimmomatic_error: "/my/folder/path/Trimmomatic_error_%A_%a.e"
+  star_index_output: "/my/folder/path/STAR_GenomeGeneration_V5Pitx1ChrUnSep.o"
+  star_index_error: "/my/folder/path/STAR_GenomeGeneration_V5Pitx1ChrUnSep.e"
+  star_align_output: "/my/folder/path/STAR_mapping_50_Trimmomatic_NCBI_Gac_v5_pitx1_output_%A_%a.o"
+  star_align_error: "/my/folder/path/STAR_mapping_50_Trimmomatic_NCBI_Gac_v5_pitx1_error_%A_%a.e"
+  rnaseq_sam_to_bam_output: "/my/folder/path/RNASeq_bam_to_sam.o"
+  rnaseq_sam_to_bam_error: "/my/folder/path/RNASeq_bam_to_sam.e"

@@ -1,0 +1,360 @@
+# Analysis parameters used by the project.
+# These were collected from the original combined script.
+
+contact:
+  email: "email@email.com"
+
+modules:
+  r: "R"
+  trimmomatic: "Trimmomatic/0.39-Java-1.8"
+  star_index: "STAR"
+  star_align: "STAR/2.7.3a-foss-2018b"
+  samtools: "SAMtools"
+
+chromosomes:
+  with_chr_prefix:
+    - "chrI"
+    - "chrII"
+    - "chrIII"
+    - "chrIV"
+    - "chrV"
+    - "chrVI"
+    - "chrVII"
+    - "chrVIII"
+    - "chrIX"
+    - "chrX"
+    - "chrXI"
+    - "chrXII"
+    - "chrXIII"
+    - "chrXIV"
+    - "chrXV"
+    - "chrXVI"
+    - "chrXVII"
+    - "chrXVIII"
+    - "chrXIX"
+    - "chrXX"
+    - "chrXXI"
+    - "pitx1"
+    - "chrY"
+    - "chrM"
+  without_chr_prefix:
+    - "I"
+    - "II"
+    - "III"
+    - "IV"
+    - "V"
+    - "VI"
+    - "VII"
+    - "VIII"
+    - "IX"
+    - "X"
+    - "XI"
+    - "XII"
+    - "XIII"
+    - "XIV"
+    - "XV"
+    - "XVI"
+    - "XVII"
+    - "XVIII"
+    - "XIX"
+    - "XX"
+    - "XXI"
+    - "pitx1"
+    - "Y"
+    - "M"
+
+fastq_split:
+  lines_per_file: 360300000
+  fastq_record_lines: 4
+
+novoalign:
+  format: "STDFQ"
+  threshold: 320
+  gap_open: 40
+  gap_extend: 12
+  repeat_method: "N"
+  max_alignments: 200
+  insert_mode: "PE"
+  insert_size_min: 200
+  insert_size_max: 250
+  output_format: "SAM"
+  output_options:
+    - "FullNW"
+
+samtools:
+  view_flags:
+    - "-S"
+    - "-b"
+
+pileup:
+  max_depth: 5000
+  distinguish_strands: false
+  min_nucleotide_depth: 0
+  min_base_quality: 20
+  ignore_query_Ns: true
+  include_deletions: true
+  scan_start: 1
+  scan_end: 40000000
+
+freqsum:
+  slurm:
+    job_name: "FreqSum_Parallel_D_S_Low"
+    cpus_per_task: 20
+    mem_per_cpu: "12G"
+    time: "00:30:00"
+    qos: "30min"
+    mail_type: "END,FAIL,TIME_LIMIT"
+  columns:
+    pileup:
+      - "chr"
+      - "pos"
+      - "base"
+      - "count"
+    wide:
+      - "chr"
+      - "pos"
+      - "A"
+      - "C"
+      - "G"
+      - "T"
+      - "-"
+  nucleotides:
+    - "A"
+    - "C"
+    - "G"
+    - "T"
+
+afd:
+  slurm:
+    job_name: "ADF_ParallelJob"
+    cpus_per_task: 20
+    mem_per_cpu: "10G"
+    time: "1-00:00:00"
+    qos: "1day"
+    mail_type: "END,FAIL,TIME_LIMIT"
+  comparison:
+    sample_a_prefix: "D_S_High_"
+    sample_b_prefix: "D_S_Low_"
+  popcovt: 50
+  maft: 0.1
+  fast_maft: 0.25
+  fast_basic_pool_coverage:
+    min: 35
+    max: 110
+  fast_dpool_coverage:
+    min: 100
+    max: 240
+  coverage_thresholds_by_chromosome:
+    I: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    II: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    III: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    IV: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    V: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    VI: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    VII: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    VIII: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    IX: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    X: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    XI: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    XII: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    XIII: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    XIV: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    XV: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    XVI: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    XVII: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    XVIII: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    XIX: {locovta: 50, upcovta: 250, locovtb: 50, upcovtb: 250}
+    XX: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    XXI: {locovta: 80, upcovta: 300, locovtb: 80, upcovtb: 300}
+    pitx1: {locovta: 50, upcovta: 300, locovtb: 50, upcovtb: 300}
+    Y: {locovta: 10, upcovta: 80, locovtb: 10, upcovtb: 80}
+    M: {locovta: 300, upcovta: 8800, locovtb: 300, upcovtb: 8800}
+
+afd_plot:
+  chromosome: "chrVI"
+  window_width_bp: 100000
+  window_step_bp: 50000
+  min_snps_per_window: 200
+  x_limit_chrVI: 17770665
+  candidate_genes:
+    hoxd4b: {start: 17744551, end: 17751342, strand: "+"}
+    hoxd9b: {start: 17728417, end: 17733088, strand: "+"}
+    hoxd11b: {start: 17721749, end: 17725793, strand: "+"}
+    cyp26b1: {start: 15822535, end: 15830014, strand: "-"}
+    slamf9: {start: 15892702, end: 15893829, strand: "-"}
+    sult6b1: {start: 15930073, end: 15936592, strand: "-"}
+    elovl6: {start: 18803388, end: 18806393, strand: "-"}
+    LOC120820802: {start: 18644440, end: 18646006, strand: "+"}
+    lnpk: {start: 17707697, end: 17716692, strand: "-"}
+    mtx2: {start: 17753154, end: 17756887, strand: "+"}
+    cdh5: {start: 17777642, end: 17801941, strand: "+"}
+
+trimmomatic:
+  slurm:
+    job_name: "Trimmomatic"
+    ntasks: 1
+    cpus_per_task: 4
+    mem_per_cpu: "10G"
+    time: "06:00:00"
+    qos: "6hours"
+    array: "1-95"
+    mail_type: "END,FAIL,TIME_LIMIT"
+  mode: "PE"
+  threads: 4
+  phred: "phred33"
+  illuminaclip: "TruSeq3-PE.fa:2:30:10:2"
+  sliding_window: "4:15"
+  minlen: 30
+
+star_index:
+  slurm:
+    job_name: "STAR_GenomeGeneration_NCBI_Gac_v5_pitx1_ChrUnSep"
+    ntasks: 1
+    cpus_per_task: 8
+    mem_per_cpu: "10G"
+    time: "5:00:00"
+    qos: "6hours"
+    array: "1-1"
+    mail_type: "END,FAIL,TIME_LIMIT"
+  run_mode: "genomeGenerate"
+  genome_sa_index_nbases: 13
+  run_threads: 8
+  sjdb_gtf_feature_exon: "exon"
+  sjdb_overhang: 100
+
+star_align:
+  slurm:
+    job_name: "STAR_aligning_NCBI_Gac_v5_pitx1"
+    ntasks: 1
+    cpus_per_task: 8
+    mem_per_cpu: "18G"
+    time: "1-00:00:00"
+    qos: "1day"
+    array: "1-95"
+    mail_type: "END,FAIL,TIME_LIMIT"
+  out_filter_multimap_nmax: 1
+  out_sam_type:
+    - "BAM"
+    - "SortedByCoordinate"
+  out_reads_unmapped: "Fastx"
+  run_threads: 8
+  limit_bam_sort_ram: 40000000000
+
+rnaseq_sam_to_bam:
+  slurm:
+    job_name: "HTSeq"
+    ntasks: 1
+    cpus_per_task: 1
+    mem_per_cpu: "4G"
+    time: "6:00:00"
+    qos: "6hours"
+    array: "1-95"
+    mail_type: "END,FAIL,TIME_LIMIT"
+
+rnaseq_analysis:
+  pca_ntop: 5000
+  min_count_all_samples: 10
+  min_replicates_all_samples: 3
+  min_count_by_age: 5
+  min_replicates_by_age: 3
+  tissues:
+    dorsal_spine: "DS"
+    pelvic_spine: "PS"
+  origins:
+    scad: "SCAD"
+    marine: "DUIN"
+  days:
+    - "10days"
+    - "13days"
+    - "16days"
+    - "19days"
+  deseq_designs:
+    all_samples: "~ Tissue + Days + Origin"
+    dorsal_spine: "~ Days + Origin"
+    dorsal_spine_by_origin: "~ Days"
+    dorsal_spine_by_day: "~ Origin"
+  differential_expression:
+    padj_cutoff_main: 0.1
+    log2fc_cutoff_main: 1
+    padj_cutoff_strict: 0.0000000001
+    log2fc_cutoff_strict: 1.5
+    heatmap_padj_cutoff: 0.00001
+    heatmap_log2fc_cutoff: 1
+  volcano_chrVI:
+    afd_peak: 18159274
+    flank_bp: 2000000
+    color_breaks: 1000
+    xlim:
+      min: -8
+      max: 8
+    point_size: 3
+    axis_label_size: 20
+    title_label_size: 22
+
+go_analysis:
+  organism_db: "org.Dr.eg.db"
+  key_type: "ENSEMBL"
+  ontology: "BP"
+  show_categories: 15
+  homology_type: "ortholog_one2one"
+  min_orthology_confidence: 1
+
+phenotypes:
+  bootstrap_iterations: 10000
+  ci_probabilities:
+    lower: 0.025
+    upper: 0.975
+  histogram_breaks:
+    start: 3
+    end: 10
+    step: 0.5
+  dorsal_spine_position:
+    one_spine_n: 49
+    two_spine_n: 53
+    anterior_ds1_max: 5
+    posterior_ds1_min: 6
+  abc:
+    simulations: 10000
+    allele_frequency_min: 0
+    allele_frequency_max: 1
+    f0_founders_per_population: 20
+    f1_families: 5
+    f1_family_sizes:
+      - 6
+      - 11
+      - 13
+      - 13
+      - 17
+    f1_total: 60
+    f2_total: 530
+    observed_f1_2ds: 0.5
+    observed_f2_2ds: 0.68
+    abc_replicates: 500
+    tolerance: 0.01
+    method: "neuralnet"
+  spine_length:
+    size_standard_mass: "cube_root_mass"
+    size_standard_pc1: "mass_and_standard_length_pc1"
+    pca_scale: true
+    phenotype_reduced: "2"
+    phenotype_complete: "3"
+  developmental_sequence:
+    legend_levels:
+      - "Nothing"
+      - "Cartilage only"
+      - "Dorsal plate ossification"
+      - "Dorsal spine"
+    groups:
+      - "DUIN"
+      - "SCAD"
+    palette:
+      Nothing: "lightgray"
+      Cartilage only: "#1E88E5"
+      Dorsal plate ossification: "#D81B60"
+      Dorsal spine: "#004D40"
+    bar_width: 0.8
+    line_width: 1.2
+    point_size: 2
+    base_size: 13
+    title_size: 15
+    combined_title_size: 18
